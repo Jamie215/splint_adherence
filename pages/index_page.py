@@ -197,6 +197,25 @@ def set_modal_content(initialize=False, selected_dt=None, download=False, merge=
                 ]),
                 width=3
             )
+        ]),
+        dbc.Row([
+            dbc.Col([
+                html.Label("Personal ID"),
+                dbc.Input(id="input-personal-id", type="number", min=0, max=65535, placeholder="A number ranging from 0 to 65535")
+            ], width=4),
+            dbc.Col([
+                html.Label("Wake up Interval"),
+                dbc.Select(id="dropdown-wakeup-interval",
+                           options=[
+                                {"label": "5 minutes", "value": "300"},
+                                {"label": "10 minutes", "value": "600"},
+                                {"label": "30 minutes", "value": "1800"},
+                                {"label": "1 hour", "value": "3600"}
+                           ],
+                           value="300"
+                )],
+                width=4
+            )
         ])
     ]
 
@@ -359,24 +378,19 @@ def register_index_callbacks():
             State("action-modal-open-state", "data"),
             State("date-picker", "date"),
             State("hour", "value"),
-            State("minute", "value")],
+            State("minute", "value"),
+            State("input-personal-id", "value"),
+            State("dropdown-wakeup-interval", "value")],
             prevent_initial_call=True)
-    def toggle_action_modal(init_click, dl_click, merge_click, re_attempt_click, connect_click, init_btn_click, is_open, curr_children, json_data, date, hour, minute):
+    def toggle_action_modal(init_click, dl_click, merge_click, re_attempt_click, connect_click, init_btn_click, is_open, curr_children, json_data, date, hour, minute, personal_id, wakeup_interval):
         """
-        Set the appropriate callback based on the user action related to the modal
-
-        init_click: "Initialize Device" button click instance (index page)
-        dl_click: "Data Download" button click instance (index page)
-        merge_click: "Data Merge" button click instance (index page)
-        re_attempt_click: "Try Again" button click instance
-        connect_click: "Connect" button click instance
-        init_btn_click: "Initialize" button click instance
-        is_open: modal open state
-        curr_children: modal content
-        json_data: json wrapping "is_open", which later is outputted as "action-modal-open-state"
-        date: value from datepicker when initializing
-        hour: hour from dropdown when initializing
-        minute: minute from dropdown when initializing
+        Handles all actions related to the modal:
+        - Initialize Device
+        - Download Data
+        - Merge Data
+        - Re-attempt Connection
+        - Connect to Arduino
+        - Start Initialization
         """
         ctx = callback_context
         triggered_id = ctx.triggered[0]["prop_id"].split(".")[0]
@@ -411,7 +425,6 @@ def register_index_callbacks():
                 # Type 5: "Connect" button triggered ("Initialize", "Download")
                 if triggered_id == "connect-modal":
                     arduino_status = arduino.get_device_status()
-
                     if arduino.arduino_serial:
                         if "Initialize Arduino" in str(curr_children):
                             if arduino_status in [b"FIRST_POWERON", b"DATA_FILE_EXISTS"]:
@@ -433,6 +446,12 @@ def register_index_callbacks():
 
                 # Type 6: "Initialize" button triggered
                 if triggered_id == "initialize-btn":
+                    # Validate inputs
+                    if not all([date, hour, minute, personal_id, wakeup_interval]):
+                        updated_children = [curr_children[0]]
+                        updated_children.extend(set_modal_content(error="Please complete all fields."))
+                        return True, updated_children, json.dumps({"is_open": True})
+                    
                     # Convert selected date and time to epoch time
                     selected_datetime = datetime.datetime.strptime(date, "%Y-%m-%d")
                     selected_datetime = selected_datetime.replace(hour=int(hour), minute=int(minute))
@@ -441,9 +460,9 @@ def register_index_callbacks():
 
                     selected_datetime = timezone.localize(selected_datetime)
                     epoch_time = int(selected_datetime.astimezone(pytz.utc).timestamp())
-
+                    
                     # Send initialization command to Arduino
-                    arduino.initialize_arduino(epoch_time)
+                    arduino.initialize_arduino(epoch_time, int(personal_id), int(wakeup_interval))
 
                     formatted_dt = selected_datetime.strftime("%A, %B %d at %I:%M %p")
                     updated_children = [curr_children[0]]

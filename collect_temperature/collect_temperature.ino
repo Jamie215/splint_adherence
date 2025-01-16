@@ -18,12 +18,7 @@
 // Enums
 enum DeviceMode { LOGGING, RETRIEVAL };
 
-// Structures
-struct DateTime {
-    uint16_t date;
-    uint16_t time;
-};
-
+// Structure
 struct TemperatureLogEntry {
     uint16_t index;                          // Log index (2 bytes)
     int16_t temperature;                     // Scaled temperature (2 bytes)
@@ -36,7 +31,6 @@ uint16_t log_index = 0;
 uint16_t personal_id = 0;
 uint16_t wakeup_interval = 0;
 uint8_t required_wdt_cycles = 1;
-DateTime current_time;
 
 ////////////////////////////
 /* Low Power Mode Related */
@@ -164,11 +158,6 @@ void writeNewLogEntry() {
         return; // Stop writing
     }
 
-    if (initial_timestamp == 0xFFFFFFFF) {
-        Serial.println("[ERROR] Initial timestamp missing.");
-        return;
-    }
-
     recoverLastLogIndex();
 
     TemperatureLogEntry newEntry = {
@@ -237,30 +226,6 @@ void retrieveLogs() {
 /* DateTime Related */
 //////////////////////
 
-bool setDateTime(const char* timestamp) {
-    Serial.print("[DEBUG] Received timestamp: ");
-    Serial.println(timestamp);
-
-    uint8_t year, month, day, hour, minute;
-    int parsed = sscanf(timestamp, "%2hhu%2hhu%2hhu %2hhu:%2hhu", &year, &month, &day, &hour, &minute);
-
-    if (parsed != 5 || month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59) {
-        Serial.println("[ERROR] Invalid datetime format. Please use YYYY-MM-DD HH:MM.");
-        return false;
-    }
-
-    current_time.date = encodeDate(year, month, day);
-    current_time.time = encodeTime(hour, minute);
-    initial_timestamp = encodeTimestamp(current_time);
-
-    __disable_irq();
-    nrf_nvmc_write_words(INITIAL_TIMESTAMP_ADDRESS, &initial_timestamp, 1);
-    __enable_irq();
-
-    logCurrentTime();
-
-    return true;
-}
 
 void readSerialInput(char* buffer, size_t length) {
     uint8_t index = 0;
@@ -289,31 +254,25 @@ void setupLoggingMode() {
     char data_buffer[50] = {0};
     readSerialInput(data_buffer, sizeof(data_buffer));
 
-    // Parse the packet: "<timestamp,personal_id,wakeup_interval>"
-    char timestamp[20], personal_id_str[10], wakeup_interval_str[10];
-    int parsed = sscanf(data_buffer, "<%[^,],%[^,],%[^>]>", timestamp, personal_id_str, wakeup_interval_str);
+    // Parse the packet: "<epoch_time,personal_id,wakeup_interval>"
+    char epoch_time_str[20], personal_id_str[10], wakeup_interval_str[10];
+    int parsed = sscanf(data_buffer, "<%[^,],%[^,],%[^>]>", epoch_time_str, personal_id_str, wakeup_interval_str);
+    initial_timestamp = strtoul(epoch_time_str, NULL, 10);
     personal_id = (uint16_t)strtoul(personal_id_str, NULL, 10);
     wakeup_interval = (uint16_t)strtoul(wakeup_interval_str, NULL, 10);
 
     if (parsed == 3) {
-        Serial.print("[INFO] Received Timestamp: ");
-        Serial.println(timestamp);
+        Serial.print("[INFO] Received Epoch Time: ");
+        Serial.println(initial_timestamp);
         Serial.print("[INFO] Received Personal ID: ");
         Serial.println(personal_id);
         Serial.print("[INFO] Received Wake-up Interval: ");
         Serial.println(wakeup_interval);
 
-        // Set DateTime
-        if (setDateTime(timestamp)) {
-            Serial.println("[INFO] Datetime set successfully.");
-            writeNewLogEntry();
-        } else {
-            Serial.println("[ERROR] Failed to set datetime.");
-        }
-
         savePersonalID(personal_id);
         saveWakeupInterval(wakeup_interval);
-
+        
+        writeNewLogEntry();
         configureWDT();
 
         Serial.println("[INFO] Data received and logging started.");
@@ -321,70 +280,6 @@ void setupLoggingMode() {
     } else {
         Serial.println("[ERROR] Failed to parse data packet.");
     }
-}
-
-uint16_t encodeDate(uint16_t year, uint8_t month, uint8_t day) {
-    year %= 100;  // Keep the last two digits of the year (e.g., 2025 -> 25)
-    return (year << 9) | (month << 5) | day;
-}
-
-uint16_t encodeTime(uint8_t hour, uint8_t minute) {
-    return (hour << 8) | minute;
-}
-
-void decodeDate(uint16_t encodedDate, uint16_t &year, uint8_t &month, uint8_t &day) {
-    year = (encodedDate >> 9) + 2000;  // Add 2000 to get the full year
-    month = (encodedDate >> 5) & 0x0F;
-    day = encodedDate & 0x1F;
-}
-
-void decodeTime(uint16_t encodedTime, uint8_t &hour, uint8_t &minute) {
-    hour = encodedTime >> 8;
-    minute = encodedTime & 0xFF;
-}
-
-uint32_t encodeTimestamp(const DateTime &dt) {
-    const uint16_t days_in_month[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-    uint32_t days = 0;
-
-    // Decode the `date` and `time` fields
-    uint16_t year;
-    uint8_t month, day, hour, minute;
-    decodeDate(dt.date, year, month, day);
-    decodeTime(dt.time, hour, minute);
-
-    // Calculate the total days for previous years
-    for (uint16_t y = 1970; y < year; y++) {
-        days += (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) ? 366 : 365;
-    }
-
-    // Calculate the total days for previous months in the current year
-    for (uint8_t m = 1; m < month; m++) {
-        days += days_in_month[m - 1];
-        if (m == 2 && (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0))) {
-            days++;  // Leap year adjustment
-        }
-    }
-
-    // Add the days in the current month
-    days += (day - 1);
-
-    // Convert total days to seconds and add the time components
-    uint32_t seconds = days * 24 * 3600 + hour * 3600 + minute * 60;
-    return seconds;
-}
-
-void logCurrentTime() {
-    uint16_t year = current_time.date >> 9;         // Extract year [15:9]
-    uint8_t month = (current_time.date >> 5) & 0x0F; // Extract month [8:5]
-    uint8_t day = current_time.date & 0x1F;         // Extract day [4:0]
-    uint8_t hour = current_time.time >> 8;          // Extract hour [15:8]
-    uint8_t minute = current_time.time & 0xFF;      // Extract minute [7:0]
-
-    char formatted_time[16];
-    sprintf(formatted_time, "%02d%02d%02d %02d:%02d", year, month, day, hour, minute);
-    Serial.print("[INFO] Initial timestamp stored: ");
-    Serial.println(formatted_time);  // Print the formatted date and time
 }
 
 ////////////
