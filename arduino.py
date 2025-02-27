@@ -68,12 +68,12 @@ def initialize_arduino(epoch_time, personal_id, wakeup_interval):
     try:
         arduino_serial.write(b"l\n")
 
-        # Wait for Arduino to send a "READY" signal
+        # Wait for Arduino to send a signal
         while True:
             response = arduino_serial.readline().decode('utf-8').strip()
             if response:
                 print(f"Arduino: {response}")
-                if "READY_FOR_DATA" in response:
+                if "SET_FOR_LOGGING" in response:
                     break
 
         # Send data packet
@@ -93,19 +93,22 @@ def initialize_arduino(epoch_time, personal_id, wakeup_interval):
     except Exception as e:
         print(f"[ERROR] An unexpected error occurred: {e}")
 
-def download_file(file_path="data_log.csv"):
+def download_file(file_path):
     """
     Download the Flash-stored data from Arduino as a CSV file
     """
-    if not arduino_serial:
-        print("[ERROR] Arduino not connected.")
-        return
+    if not arduino_serial or not arduino_serial.is_open:
+        connect_arduino()
     try:
         arduino_serial.write(b"r\n")
-        print("[INFO] Retrieving data from Arduino...")
-        with open(file_path, "w") as csv_file:
-            csv_file.write("Datetime,Temperature\n")  # Write CSV header
-            
+        # Wait for Arduino to send a signal
+        while True:
+            response = arduino_serial.readline().decode('utf-8').strip()
+            if response:
+                print(f"Arduino: {response}")
+                if "SET_FOR_RETRIEVAL" in response:
+                    break
+        with open(file_path, "w") as csv_file:            
             initial_timestamp = None
             wakeup_interval = 300
             personal_id = None
@@ -126,15 +129,18 @@ def download_file(file_path="data_log.csv"):
                 elif "Personal ID" in line:
                     _, personal_id = line.split(":")
                     csv_file.write(f"ID: {personal_id}\n")
-                try:
-                    index, temperature = line.split(",")
-                    index = int(index)
-                    timestamp = (initial_timestamp + timedelta(seconds=(index*int(wakeup_interval)))).strftime("%Y-%m-%d %H:%M:%S")
-                    # Write formatted data to the CSV
-                    csv_file.write(f"{timestamp},{temperature}\n")
-                    print(f"{timestamp},{temperature}")  # Print to console
-                except ValueError:
-                    print(f"Failed to parse line: {line}")
-                    continue
+                    csv_file.write("Datetime,Temperature\n")  # Write CSV header
+                else:
+                    try:
+                        index, temperature = line.split(",")
+                        index = int(index)
+                        timestamp = (initial_timestamp + timedelta(seconds=(index*int(wakeup_interval)))).strftime("%Y-%m-%d %H:%M:%S")
+                        # Write formatted data to the CSV
+                        csv_file.write(f"{timestamp},{temperature}\n")
+                        print(f"{timestamp},{temperature}")  # Print to console
+                    except ValueError:
+                        print(f"Failed to parse line: {line}")
+                        continue
     except Exception as e:
         print(f"Failed to retrieve data: {e}")
+        raise ConnectionError()

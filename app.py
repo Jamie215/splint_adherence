@@ -19,7 +19,7 @@ import dash_bootstrap_components as dbc
 import requests
 
 from app_instance import app, socketio, server
-from pages.data_analysis_page import data_analysis_layout
+# from pages.data_analysis_page import data_analysis_layout
 from pages.index_page import index_layout, register_index_callbacks
 import arduino
 
@@ -46,10 +46,10 @@ app.layout = html.Div([
 # Route to load the appropriate page layout
 @app.callback(Output("page-content", "children"), [Input("url", "pathname")])
 def display_page(pathname):
-    if pathname == "/data-analysis":
-        return data_analysis_layout
-    else:
-        return index_layout()
+    # if pathname == "/data-analysis":
+    #     return data_analysis_layout
+    # else:
+    return index_layout()
 
 heartbeat_timeout = None
 
