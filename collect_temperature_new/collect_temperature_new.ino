@@ -27,7 +27,6 @@ using namespace rtos;
 #define CMD_STATUS "STATUS"
 #define CMD_INIT "INIT"
 #define CMD_RETRIEVE "RETRIEVE"
-#define CMD_DISCONNECT "DISCONNECT"
 
 // Response types
 #define RESP_OK "OK"
@@ -203,11 +202,20 @@ bool initializeDevice(const char* packet) {
     return saveConfig();
 }
 
+// Function to send a formatted response
+void sendResponse(const char* prefix, const char* type, const char* data = NULL) {
+    if (data != NULL) {
+        serial.printf("%s%s;%s\r\n", prefix, type, data);
+    } else {
+        serial.printf("%s%s;\r\n", prefix, type);
+    }
+}
+
 // Prepare the device for complete shutdown (to begin logging on next power-up)
 void prepareForLogging() {
     
     // Send initialization confirmation message
-    serial.printf("%s%s;%s\r\n", RESP_PREFIX, RESP_OK, "INITIALIZED");
+    sendResponse(RESP_PREFIX, RESP_OK, "INITIALIZED");
     ThisThread::sleep_for(1000);
 
     while(serial.available()) {
@@ -295,15 +303,6 @@ void enterSleep() {
     // Reinitialize I2C
     Wire1.begin();
     Wire1.setClock(100000);
-}
-
-// Function to send a formatted response
-void sendResponse(const char* prefix, const char* type, const char* data = NULL) {
-    if (data != NULL) {
-        serial.printf("%s%s;%s\r\n", prefix, type, data);
-    } else {
-        serial.printf("%s%s;\r\n", prefix, type);
-    }
 }
 
 // Function to handle device status request
@@ -415,9 +414,17 @@ void processCommand(char* buffer) {
             // Check if this has a payload
             if (*cmdEnd != '\0') {
                 if (initializeDevice(cmdEnd)) {
-                    // Shutdown to enter logging mode on next power-up
-                    ThisThread::sleep_for(1000);
+                    ThisThread::sleep_for(500);
                     prepareForLogging();
+
+                    ThisThread::sleep_for(1000);
+
+                    NRF_UARTE0->ENABLE = 0;
+                    NRF_UART0->ENABLE = 0;
+                    NRF_USBD->ENABLE = 0;
+                    ThisThread::sleep_for(100);
+
+                    NRF_POWER->SYSTEMOFF = 1;
                 } else {
                     serial.printf("[ERROR] Failed to initialize device\r\n");
                     sendResponse(RESP_PREFIX, RESP_ERROR, "INIT_FAILED");
@@ -428,16 +435,6 @@ void processCommand(char* buffer) {
         }
         else if (strcmp(cmdStart, CMD_RETRIEVE) == 0) {
             handleRetrieveRequest();
-        }
-        else if (strcmp(cmdStart, CMD_DISCONNECT) == 0) {
-            sendResponse(RESP_PREFIX, RESP_OK, "READY_FOR_LOGGING");
-
-            NRF_UARTE0->ENABLE = 0;
-            NRF_UART0->ENABLE = 0;
-            NRF_USBD->ENABLE = 0;
-            ThisThread::sleep_for(1000);
-
-            nrf_gpio_pin_clear(DEBUG_GPIO_PIN);
         }
         else {
             sendResponse(RESP_PREFIX, RESP_ERROR, "Unknown command");

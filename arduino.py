@@ -262,10 +262,9 @@ def initialize_arduino(epoch_time: int, personal_id: Union[int, str], wakeup_int
         
         debug_output.append(f"Initialization data sent: {init_payload}")
 
-        # Send disconnect command
-        success, response = send_command (CMD_DISCONNECT)
-        if success and "READY_FOR_LOGGING" in response:
+        if success and "INITIALIZED" in response:
             debug_output.append("Device successfully prepared for logging mode")
+            
         else:
             debug_output.append(f"Warning: Device may not have transitioned properly: {response}")
 
@@ -371,7 +370,7 @@ def download_file(file_path: str) -> Dict[str, Any]:
         
         # Write headers
         csv_writer.writerow(['Initial Timestamp', metadata.get('Initial Timestamp', 'N/A')])
-        csv_writer.writerow(['Wake-up Interval', metadata.get('Wake-up Interval', 'N/A')])
+        csv_writer.writerow(['Wake-up Interval (Seconds)', metadata.get('Wake-up Interval', 'N/A')])
         csv_writer.writerow(['Personal ID', metadata.get('Personal ID', 'N/A')])
         csv_writer.writerow([])  # Empty row
         csv_writer.writerow(['Timestamp', 'Temperature (C)'])

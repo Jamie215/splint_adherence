@@ -153,7 +153,7 @@ def set_modal_content(initialize=False, selected_dt=None, download=False, error=
         dbc.Row([
             dbc.Col([
                 html.Label("Personal ID", style={"display":"none"} if not initialize else {}),
-                dbc.Input(id="input-personal-id", type="number", min=0, max=65535, placeholder="A number ranging from 0 to 65535", style={"display":"none"} if not initialize else {})
+                dbc.Input(id="input-personal-id", type="number", min=0, max=65535, placeholder="0 to 65535", style={"display":"none"} if not initialize else {})
             ], width=6
             ),
             dbc.Col([
