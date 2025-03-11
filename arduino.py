@@ -3,7 +3,8 @@ import io
 import os
 import time
 import datetime
-from typing import Optional, Tuple, Dict, Any, Union
+import struct
+from typing import Optional, Dict, Any, Tuple, Union
 
 import serial
 import serial.tools.list_ports
@@ -12,47 +13,42 @@ import serial.tools.list_ports
 BAUD_RATE = 115200
 TIMEOUT = 5  # seconds
 READ_TIMEOUT = 10  # seconds for longer operations like data download
-DEBUG_TIMEOUT = 20  # longer timeout for capturing debug messages
-
-# Command prefixes and response identifiers
-CMD_PREFIX = "CMD:"
-RESP_PREFIX = "RESP:"
-DATA_PREFIX = "DATA:"
-
-# Command types
-CMD_STATUS = "STATUS"
-CMD_INIT = "INIT"
-CMD_RETRIEVE = "RETRIEVE"
-CMD_DISCONNECT = "DISCONNECT"
-
-# Response types
-RESP_OK = "OK"
-RESP_ERROR = "ERROR"
-DATA_BEGIN = "BEGIN"
-DATA_END = "END"
 
 # Global serial connection
 arduino_serial = None
 
-def find_arduino_port() -> Optional[str]:
+def search_for_arduino() -> Optional[serial.Serial]:
     """
-    Find the port to which the Arduino is connected.
-    Returns the port name or None if no suitable device is found.
+    Search for the Arduino device with a simple handshake protocol.
+    Returns a Serial object if device is found, None otherwise.
     """
-    available_ports = list(serial.tools.list_ports.comports())
+    available_ports = [port.device for port in serial.tools.list_ports.comports()]
     
-    # If there's only one port, use it
-    if len(available_ports) == 1:
-        return available_ports[0].device
-    
-    # Otherwise, try to identify an Arduino port
-    arduino_identifiers = ['arduino', 'USB Serial Device', 'usbmodem', 'ttyACM', 'ttyUSB']
     for port in available_ports:
-        if any(identifier.lower() in port.description.lower() for identifier in arduino_identifiers):
-            return port.device
+        try:
+            ser = serial.Serial(port, BAUD_RATE, timeout=TIMEOUT)
+            time.sleep(2)  # Give Arduino time to reset after connection
             
-    # Return the first port if we can't specifically identify an Arduino
-    return available_ports[0].device if available_ports else None
+            # Clear any pending data
+            ser.reset_input_buffer()
+                
+            # Send handshake request
+            ser.write(b"?")
+            response = ser.readline().strip()
+            
+            if response == b"Hello World!":
+                print(f"Arduino found on port {port}")
+                return ser
+            
+            # Not a recognized device, close and try next port
+            ser.close()
+            
+        except serial.SerialException:
+            # Move to next port on error
+            if 'ser' in locals() and ser.is_open:
+                ser.close()
+                
+    return None
 
 def connect_to_arduino() -> Tuple[bool, str]:
     """
@@ -66,220 +62,128 @@ def connect_to_arduino() -> Tuple[bool, str]:
         arduino_serial.close()
         time.sleep(1)  # Give it time to close properly
     
-    # Find Arduino port
-    port = find_arduino_port()
-    if not port:
+    # Search for Arduino
+    arduino_serial = search_for_arduino()
+    if not arduino_serial:
         return False, "No Arduino device found"
     
-    try:
-        # Open serial connection
-        arduino_serial = serial.Serial(port, BAUD_RATE, timeout=TIMEOUT)
-        time.sleep(2)  # Give Arduino time to reset after connection
-        
-        # Clear any pending data
-        if arduino_serial.in_waiting:
-            arduino_serial.reset_input_buffer()
-            
-        return True, f"Connected to Arduino on {port}"
-    except Exception as e:
-        return False, f"Failed to connect: {str(e)}"
-
-def send_command(command: str, payload: str = "") -> Tuple[bool, str]:
-    """
-    Send a command to the Arduino.
-    command: The command to send (STATUS, INIT, RETRIEVE)
-    payload: Optional payload data for the command
-    Returns a tuple: (success, response or error message)
-    """
-    global arduino_serial
-    
-    if not arduino_serial or not arduino_serial.is_open:
-        return False, "Not connected to Arduino"
-    
-    try:
-        # Format the command
-        cmd = f"{CMD_PREFIX}{command};"
-        if payload:
-            cmd += payload
-        cmd += "\r\n"
-        
-        # Clear input buffer before sending command
-        arduino_serial.reset_input_buffer()
-        
-        # Send the command
-        arduino_serial.write(cmd.encode())
-        arduino_serial.flush()
-        
-        # Wait for response
-        start_time = time.time()
-        response = ""
-
-        while True:
-            if time.time() - start_time > TIMEOUT:
-                return False, "Timeout waiting for response"
-            if arduino_serial.in_waiting == 0:
-                time.sleep(0.1)
-                continue
-
-            line = arduino_serial.readline().decode().strip()
-
-            # Skip debug and info messages
-            if line.startswith("[DEBUG]") or line.startswith("[INFO]") or line.startswith("[BOOT]"):
-                print(f"Debug message: {line}")
-                continue
-                
-            # Check for proper response
-            if line.startswith(RESP_PREFIX):
-                response = line
-                break
-                
-            # If we get here, we received something unexpected
-            if line:
-                return False, f"Unexpected response: {line}"
-                
-        # Parse response
-        if response.startswith(RESP_PREFIX):
-            parts = response[len(RESP_PREFIX):].split(';')
-            status = parts[0]
-            data = parts[1] if len(parts) > 1 else ""
-            
-            if status == RESP_OK:
-                return True, data
-            elif status == RESP_ERROR:
-                return False, f"Arduino error: {data}"
-        
-        return False, f"Unexpected response: {response}"
-    except Exception as e:
-        return False, f"Command error: {str(e)}"
+    return True, f"Connected to Arduino on {arduino_serial.port}"
 
 def get_device_status() -> bytes:
     """
     Check the status of the Arduino device.
-    Returns the status as bytes (for compatibility with existing code).
+    Returns the status as bytes.
     """
+    global arduino_serial
+    
     # Connect if not already connected
     if not arduino_serial or not arduino_serial.is_open:
         success, _ = connect_to_arduino()
         if not success:
             return b"DISCONNECTED"
     
-    # Send status command
-    success, response = send_command(CMD_STATUS)
-    if success:
-        if "CONFIGURED" in response:
-            return b"CONNECTED"
-        elif "NOT_CONFIGURED" in response:
-            return b"CONNECTED"
-        elif "HAS_DATA" in response:
-            return b"CONNECTED"
-        else:
-            return response.encode()
-    
-    return b"ERROR"
-
-def read_debug_messages(timeout_seconds=DEBUG_TIMEOUT) -> str:
-    """
-    Read all available debug messages from the Arduino.
-    Continues reading until timeout or connection is lost.
-    
-    Returns:
-        A string containing all captured messages.
-    """
-    if not arduino_serial or not arduino_serial.is_open:
-        return "Error: Not connected to Arduino"
-    
-    # Set a longer timeout for debug reading
-    original_timeout = arduino_serial.timeout
-    arduino_serial.timeout = 1.0  # Short timeout for readline, but we'll loop
-    
-    messages = []
-    start_time = time.time()
-    
-    print("Reading debug messages... (press Ctrl+C to stop)")
-    
     try:
-        # Read messages until timeout or connection lost
-        while time.time() - start_time < timeout_seconds:
-            try:
-                if arduino_serial.in_waiting > 0:
-                    line = arduino_serial.readline().decode('utf-8', errors='replace').strip()
-                    if line:
-                        print(f"DEBUG: {line}")
-                        messages.append(line)
-                        # Reset timeout if we're still receiving data
-                        if "[DEBUG]" in line or "[STATUS]" in line:
-                            start_time = time.time()
-                else:
-                    time.sleep(0.1)
-            except Exception as e:
-                print(f"Communication interrupted: {e}")
-                messages.append(f"--- Communication interrupted: {e} ---")
-                break
-    except KeyboardInterrupt:
-        messages.append("--- Debug capture stopped by user ---")
-    finally:
-        # Restore original timeout
+        # Send status request
+        arduino_serial.reset_input_buffer()
+        arduino_serial.write(b"!")
+        response = arduino_serial.readline().strip()
+        
+        if not response:
+            return b"ERROR"
+            
+        print(f"Status response: {response}")
+        return response
+        
+    except Exception as e:
+        print(f"Error getting status: {e}")
+        # If error occurs, try to close and reopen the connection
         if arduino_serial and arduino_serial.is_open:
-            arduino_serial.timeout = original_timeout
-    
-    return "\n".join(messages)
+            arduino_serial.close()
+        arduino_serial = None
+        return b"ERROR"
 
-def initialize_arduino(epoch_time: int, personal_id: Union[int, str], wakeup_interval: int) -> Tuple[bool, str]:
+def initialize_arduino(epoch_time: int, personal_id: Union[int, str] = "", wakeup_interval: int = 30) -> Tuple[bool, str]:
     """
-    Initialize the Arduino with timestamp, personal ID, and wake-up interval.
-    Captures and returns detailed debug information.
+    Initialize the Arduino with timestamp, ID and wakeup interval
     
     Returns:
         Tuple: (success, debug_output)
     """
+    global arduino_serial
+
+    # Convert personal_id to string if it's an integer
+    personal_id = str(personal_id) if isinstance(personal_id, int) else personal_id
+    
+    # Check for timestamp overflow and warn
+    if epoch_time >= 2**32:
+        print("Warning: Timestamp exceeds 32-bit limit, will be truncated on device")
+    
     # Connect if not already connected
     if not arduino_serial or not arduino_serial.is_open:
         success, message = connect_to_arduino()
         if not success:
             return False, f"Failed to connect to Arduino: {message}"
     
-    if isinstance(personal_id, int):
-        personal_id = str(personal_id)
-    
-    # Step 1: Send initialization command to prepare Arduino
-    success, response = send_command(CMD_INIT)
-    if not success:
-        return False, f"Failed to prepare Arduino for initialization: {response}"
-    
-    # The "SET_FOR_LOGGING" response means Arduino is waiting for initialization data
-    if "READY_FOR_INIT" not in response:
-        return False, f"Unexpected response preparing for initialization: {response}"
-    
-    debug_output = [f"Arduino is ready for initialization data. Response: {response}"]
-    
-    # Step 2: Send initialization data
     try:
-        # Send initialization data directly in the format Arduino expects
-        init_payload = f"<{epoch_time},{personal_id},{wakeup_interval}>"
-        success, response = send_command(CMD_INIT, init_payload)
-        if not success:
-            return False, f"Failed to initialize Arduino: {response}"
+        # Send initialization command
+        arduino_serial.reset_input_buffer()
+        arduino_serial.write(b"i")
+        time.sleep(0.5)
+        response = arduino_serial.readline().strip()
+        print(f"Initialization response: {response}")
         
-        debug_output.append(f"Initialization data sent: {init_payload}")
+        if response != b"READY_FOR_INIT":
+            return False, f"Unexpected response: {response}"
+        
+        # Create format string for packing
+        # Ensure personal_id is exactly 16 bytes, null-padded
+        id_bytes = personal_id.encode('utf-8')
+        if len(id_bytes) > 15:  # Allow space for null terminator
+            id_bytes = id_bytes[:15]
+        id_bytes = id_bytes.ljust(16, b'\0')
+        
+        # Pack data:
+        # uint32_t timestamp (4 bytes)
+        # uint32_t wakeup_interval (4 bytes)
+        # char[16] personal_id (16 bytes)
+        # uint32_t checksum (4 bytes)
+        fmt = "<II16sI"
+        
+        # Use 32-bit timestamp (truncate if needed)
+        timestamp_32bit = epoch_time & 0xFFFFFFFF
+        
+        # Calculate simple checksum (sum of all bytes in other fields)
+        data_to_checksum = struct.pack("<II16s", timestamp_32bit, wakeup_interval, id_bytes)
+        checksum = sum(data_to_checksum) & 0xFFFFFFFF
+        
+        # Pack all data with checksum
+        packed_data = struct.pack(fmt, timestamp_32bit, wakeup_interval, id_bytes, checksum)
+        
+        # Send the packed data
+        arduino_serial.write(packed_data)
 
-        if success and "INITIALIZED" in response:
-            debug_output.append("Device successfully prepared for logging mode")
-            
-        else:
-            debug_output.append(f"Warning: Device may not have transitioned properly: {response}")
-
-        return True, "\n".join(debug_output)
+        # Wait for response (this might not come due to shutdown)
+        start_time = time.time()
+        response = b""
+        while time.time() - start_time < 5:
+            if arduino_serial.in_waiting:
+                response = arduino_serial.readline().strip()
+                if response:
+                    print(f"Final response: {response}")
+                    break
+            time.sleep(0.1)
+        
+        return True, "Device initialized successfully"
         
     except Exception as e:
         # Check if this is the expected disconnect due to Arduino shutting down
         if ("PermissionError" in str(e) or "device disconnected" in str(e) or 
             "ClearCommError" in str(e) or "device not recognized" in str(e)):
             # This is normal - the Arduino has shut down as expected
-            debug_output.append(f"Device disconnected during shutdown sequence (expected behavior): {e}")
-            return True, "\n".join(debug_output)
+            return True, f"Device disconnected during shutdown sequence (expected behavior): {e}"
         
         # This is an unexpected error
-        return False, f"Failed to send initialization data: {str(e)}"
+        return False, f"Failed to initialize Arduino: {str(e)}"
     finally:
         # Always disconnect after initialization
         disconnect_arduino()
@@ -287,108 +191,146 @@ def initialize_arduino(epoch_time: int, personal_id: Union[int, str], wakeup_int
 def download_file(file_path: str) -> Dict[str, Any]:
     """
     Download data from the Arduino and save it to a file.
-    Returns a dictionary with the data for the Dash download component.
+    
+    Args:
+        file_path: Path to save the data
+        
+    Returns:
+        A dictionary with the data for the Dash download component.
     """
+    global arduino_serial
+    
     # Connect if not already connected
     if not arduino_serial or not arduino_serial.is_open:
         success, message = connect_to_arduino()
         if not success:
             raise Exception(f"Failed to connect to Arduino: {message}")
     
-    # Set longer timeout for data retrieval
-    original_timeout = arduino_serial.timeout
-    arduino_serial.timeout = READ_TIMEOUT
-    
     try:
-        # Clear any pending data in the buffer
-        if arduino_serial.in_waiting:
-            arduino_serial.reset_input_buffer()
-
-        # Send retrieve command
-        success, response = send_command(CMD_RETRIEVE)
-        if not success:
-            raise Exception(f"Failed to retrieve data: {response}")
+        # Set longer timeout for download
+        original_timeout = arduino_serial.timeout
+        arduino_serial.timeout = READ_TIMEOUT
         
-        # Read metadata and data
-        metadata = {}
-        data_points = []
-        in_data_section = False
-        
-        # Process response lines
-        while True:
-            line = arduino_serial.readline().decode().strip()
-            if not line:
-                continue
+        # Temporary file for raw data
+        temp_file_path = file_path + ".temp"
 
-            if line.startswith("[DEBUG]") or line.startswith("[INFO]"):
-                print(f"Debug: {line}")
-                continue
-                
-            # Check for metadata
-            if ':' in line and not line.startswith(DATA_PREFIX) and not in_data_section:
-                key, value = line.split(':', 1)
-                if key == "Initial Timestamp":
-                    epoch_time = int(value)
-                    formatted_time = datetime.datetime.fromtimestamp(epoch_time, tz=datetime.timezone.utc)
-                    formatted_time = formatted_time.strftime("%Y-%m-%d %H:%M:%S")
-                    metadata[key] = formatted_time
+        arduino_serial.reset_input_buffer()
+        arduino_serial.write(b"r")
+
+        # Define end marker for data transmission
+        end_data_marker = b"END_DATA"
+        marker_position = 0
+        
+        with open(temp_file_path, "wb") as file:
+            # Wait for data to become available (with timeout)
+            start_time = time.time()
+            while arduino_serial.in_waiting == 0:
+                if time.time() - start_time > READ_TIMEOUT:
+                    raise TimeoutError("Timeout waiting for data from Arduino")
+                time.sleep(0.1)
+
+            data_buffer = bytearray()
+            data_in_buffer = False
+
+            # Continuously read the data until the end marker is found
+            while True:
+                if arduino_serial.in_waiting > 0:
+                    data = arduino_serial.read(1024)
+                    print(f"Received {len(data)} bytes of data")
+                    
+                    for byte in data:
+                        # Check for the end of marker sequence
+                        if byte == end_data_marker[marker_position]:
+                            data_buffer.append(byte)
+                            data_in_buffer = True
+                            marker_position += 1
+                            if marker_position == len(end_data_marker):
+                                break
+                        else:
+                            marker_position = 0
+                            if data_in_buffer:
+                                file.write(data_buffer)
+                                data_in_buffer = False
+                                data_buffer.clear()
+                            file.write(bytes([byte]))
+
+                    if marker_position == len(end_data_marker):
+                        break
+        
+        converted_lines = []
+        metadata_lines = []
+        found_header = False
+
+        with open(temp_file_path, 'r') as file:
+            for line in file:
+                line = line.strip()
+
+                if not found_header:
+                    if line.startswith("Timestamp,"):
+                        # Found the header line
+                        found_header = True
+                        converted_lines.append("Timestamp,Temperature")
+                    else:
+                        # Still in metadata section
+                        if line.startswith("Initial Timestamp,"):
+                            parts = line.split(',',1)
+                            if len(parts) == 2 and parts[1].strip().isdigit():
+                                # Convert Initial Timestamp to ISO format
+                                epoch_time = int(parts[1].strip())
+                                iso_time = datetime.datetime.fromtimestamp(
+                                    epoch_time, 
+                                    tz=datetime.timezone.utc
+                                ).strftime('%Y-%m-%d %H:%M:%S')
+                                metadata_lines.append(f"Initial Timestamp,{iso_time}")
+                            else:
+                                metadata_lines.append(line)
+                        else:
+                            metadata_lines.append(line)
                 else:
-                    metadata[key] = value
-                continue
-                
-            # Check for data section start
-            if line == f"{DATA_PREFIX}{DATA_BEGIN};":
-                in_data_section = True
-                continue
-                
-            # Check for data section end
-            if line == f"{DATA_PREFIX}{DATA_END};":
-                break
-                
-            # Process data point if in data section
-            if in_data_section and ',' in line:
-                try:
-                    index, temp = line.split(',')
-                    data_points.append((int(index), float(temp)))
-                except ValueError:
-                    # Skip malformed lines
-                    continue
+                    # In data section, check if this is a data line with timestamp
+                    parts = line.split(',', 1)
+                    if len(parts) == 2 and parts[0].strip().isdigit():
+                        # Convert epoch timestamp to ISO format
+                        epoch_time = int(parts[0].strip())
+                        iso_time = datetime.datetime.fromtimestamp(
+                            epoch_time,
+                            tz=datetime.timezone.utc
+                        ).strftime('%Y-%m-%d %H:%M:%S')
+                        converted_lines.append(f"{iso_time},{parts[1]}")
+                    else:
+                        # Not a data line, keep as is
+                        converted_lines.append(line)
         
-        # Calculate timestamps for each data point
-        timestamped_data = []
-        wakeup_interval = int(metadata.get('Wake-up Interval', 0))
-
-        for index, temp in data_points:
-            timestamp = epoch_time + (index*wakeup_interval)
-            formatted_timestamp = datetime.datetime.fromtimestamp(timestamp, tz=datetime.timezone.utc)
-            formatted_timestamp = formatted_timestamp.strftime("%Y-%m-%d %H:%M:%S")
-            timestamped_data.append((formatted_timestamp, temp))
+        # Write processed data to the actual output file
+        with open(file_path, 'w', newline='') as file:
+            # Write metadata
+            for line in metadata_lines:
+                file.write(line + '\r\n')
+            
+            # Add blank line between metadata and data
+            if metadata_lines:
+                file.write('\r\n')
+            
+            # Write converted data
+            for line in converted_lines:
+                file.write(line + '\r\n')
         
-        # Create CSV in memory
-        csv_buffer = io.StringIO()
-        csv_writer = csv.writer(csv_buffer)
+        # Delete temporary file
+        os.remove(temp_file_path)
         
-        # Write headers
-        csv_writer.writerow(['Initial Timestamp', metadata.get('Initial Timestamp', 'N/A')])
-        csv_writer.writerow(['Wake-up Interval (Seconds)', metadata.get('Wake-up Interval', 'N/A')])
-        csv_writer.writerow(['Personal ID', metadata.get('Personal ID', 'N/A')])
-        csv_writer.writerow([])  # Empty row
-        csv_writer.writerow(['Timestamp', 'Temperature (C)'])
-        
-        # Write data points
-        for timestamp, temp in timestamped_data:
-            csv_writer.writerow([timestamp, temp])
-        
-        # Save to file
-        with open(file_path, 'w', newline='') as f:
-            f.write(csv_buffer.getvalue())
-        
-        # Prepare return data for Dash download
+        # Read the processed file
+        with open(file_path, 'r') as f:
+            csv_content = f.read()
+            
         return {
-            'content': csv_buffer.getvalue(),
+            'content': csv_content,
             'filename': os.path.basename(file_path),
             'type': 'text/csv'
         }
+                
+    except Exception as e:
+        print(f"Error downloading file: {e}")
+        raise Exception(f"Failed to download data: {str(e)}")
             
     finally:
         # Restore original timeout
@@ -404,3 +346,4 @@ def disconnect_arduino() -> None:
     if arduino_serial and arduino_serial.is_open:
         arduino_serial.close()
         arduino_serial = None
+        print("Arduino disconnected successfully")

@@ -53,16 +53,6 @@ def set_modal_content(initialize=False, selected_dt=None, download=False, error=
         ]
     elif download:
         status_msg = [
-            html.Div("Select from below to download the appropriate format.", className="mb-2"),
-            dbc.Select(
-                id="download-filetype",
-                options=[
-                    {"label": ".RAW", "value": "1"},
-                    {"label": ".CSV", "value": "2"}
-                ],
-                value=2,
-                className="mb-4"
-            ),
             html.Div("Enter your filename."),
             dbc.Input(id="download-filename", placeholder="Subject(UID)_(Quarter).(DeviceIteration)", value="Subject_", required=True, className="mb-2"),
             dcc.Loading(
@@ -361,15 +351,24 @@ def register_index_callbacks():
                 # Type 4: "Connect" button triggered ("Initialize", "Download")
                 if triggered_id == "connect-modal":
                     arduino_status = arduino.get_device_status()
-                    if arduino.arduino_serial and arduino_status == b"CONNECTED":
+                    if arduino.arduino_serial:
                         if "Initialize Arduino" in str(curr_children):
-                            updated_children = [curr_children[0]]
-                            updated_children.extend(set_modal_content(initialize=True, footer_view="Initialize"))
-                            return True, updated_children, json.dumps({"is_open": True})
+                            if arduino_status in [b"FIRST_CONFIGURATION", b"HAS_DATA"]:
+                                updated_children = [curr_children[0]]
+                                updated_children.extend(set_modal_content(initialize=True, footer_view="Initialize"))
+                                return True, updated_children, json.dumps({"is_open": True})
                         elif "Download Data" in str(curr_children):
-                            updated_children = [curr_children[0]]
-                            updated_children.extend(set_modal_content(download=True))
-                            return True, updated_children, json.dumps({"is_open": True})
+                            if arduino_status == b"FIRST_CONFIGURATION":
+                                updated_children = [
+                                    curr_children[0],
+                                    dbc.ModalBody("First time initiating the device! No data available"),
+                                    curr_children[2]
+                                ]
+                                return True, updated_children, json.dumps({"is_open": True})
+                            if arduino_status == b"HAS_DATA":
+                                updated_children = [curr_children[0]]
+                                updated_children.extend(set_modal_content(download=True))
+                                return True, updated_children, json.dumps({"is_open": True})
 
                 # Type 5: "Initialize" button triggered
                 if triggered_id == "initialize-btn":
@@ -424,16 +423,14 @@ def register_index_callbacks():
             Output("download-filename", "style"),
             Output("download-file-status", "children"),
             Output("download-btn", "disabled", allow_duplicate=True)],
-            [Input("download-filetype", "value"),
-            Input("download-filename", "value"),
+            [Input("download-filename", "value"),
             Input("download-btn", "n_clicks")],
             [State("action-modal-open-state", "data")],
             prevent_initial_call=True)
-    def download_data(filetype, filename, download_click, modal_open_state):
+    def download_data(filename, download_click, modal_open_state):
         """
         Download the Arduino data in a specified format
 
-        filetype: input filetype (e.g., csv, raw)
         filename: input filename (e.g., Subject1234_1.1.csv)
         download_click: "Download" button click instance
         modal_open_state: State on whether or not the modal is open

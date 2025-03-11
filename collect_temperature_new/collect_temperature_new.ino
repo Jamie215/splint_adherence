@@ -18,24 +18,7 @@ using namespace rtos;
 #define DATA_START_ADDRESS       0x81000
 #define MAX_DATA_ENTRIES         1000
 
-// Command and response prefixes
-#define CMD_PREFIX "CMD:"
-#define RESP_PREFIX "RESP:"
-#define DATA_PREFIX "DATA:"
-
-// Command types
-#define CMD_STATUS "STATUS"
-#define CMD_INIT "INIT"
-#define CMD_RETRIEVE "RETRIEVE"
-
-// Response types
-#define RESP_OK "OK"
-#define RESP_ERROR "ERROR"
-#define DATA_BEGIN "BEGIN"
-#define DATA_END "END"
-
-// Maximum buffer size for commands
-#define MAX_BUFFER_SIZE 128
+#define END_DATA_MARKER "END_DATA"
 
 // Simplified operation modes - only these three core states
 enum OperationMode {
@@ -51,7 +34,13 @@ struct ConfigData {
     char personalId[16];        // User identifier
     uint32_t currentDataIndex;  // Number of readings collected
     OperationMode mode;         // Current operation mode
-    uint32_t magicNumber;       // For validation (0xABCD1234)
+};
+
+struct InitializationData {
+    uint32_t timestamp;
+    uint32_t wakeupInterval;
+    char personalId[16];
+    uint32_t checksum;
 };
 
 struct TemperatureData {
@@ -65,8 +54,7 @@ ConfigData config = {
     DEFAULT_WAKEUP_INTERVAL, // wakeupInterval
     "DEFAULT_ID",            // personalId
     0,                       // currentDataIndex
-    MODE_IDLE,            // mode - default to command mode
-    0xABCD1234               // magicNumber for validation
+    MODE_IDLE,               // mode - default to command mode
 };
 
 // Current operation mode
@@ -76,26 +64,44 @@ OperationMode currentMode = MODE_IDLE;
 LowPowerTimeout wakeupTimer;
 volatile bool wakeupFlag = false;
 
-// Serial command buffer
-char cmdBuffer[MAX_BUFFER_SIZE];
-int cmdIndex = 0;
-
 // Flash access object
 FlashIAP flash;
 
-// Serial communication
-USBSerial serial;
+// Serial communication-related
+USBSerial* serialPtr = nullptr;
+
+// Function to get serial interface when needed
+USBSerial& getSerial() {
+    if (serialPtr == nullptr) {
+        // Only create the USBSerial object when first needed
+        serialPtr = new USBSerial();
+        
+        // Give hardware time to initialize
+        ThisThread::sleep_for(100); 
+    }
+    return *serialPtr;
+}
+
+// Function to release serial interface
+void releaseSerial() {
+    if (serialPtr != nullptr) {
+        delete serialPtr;
+        serialPtr = nullptr;
+        
+        // Explicitly disable hardware
+        NRF_USBD->ENABLE = 0;
+    }
+}
 
 // Callback for timer
 void wakeupCallback() {
     wakeupFlag = true;
 }
 
-// Save configuration to flash
+// Function to save configuration to flash
 bool saveConfig() {
     // Sync the configuration
     config.mode = currentMode;
-    config.magicNumber = 0xABCD1234;
     
     // Erase config page
     int result = flash.erase(CONFIG_ADDRESS, FLASH_PAGE_SIZE);
@@ -112,6 +118,7 @@ bool saveConfig() {
     return true;
 }
 
+// Function to blink DEBUG_GPIO_PIN
 void blinkDebugPin(int times, int onTimeMs = 200, int offTimeMs = 200) {
     for (int i = 0; i < times; i++) {
         nrf_gpio_pin_set(DEBUG_GPIO_PIN);
@@ -123,7 +130,7 @@ void blinkDebugPin(int times, int onTimeMs = 200, int offTimeMs = 200) {
     }
 }
 
-// Save temperature reading to flash
+// Function to save temperature reading to flash
 bool saveTemperatureReading(float temperature) {    
     // Calculate address for this reading
     uint32_t dataAddress = DATA_START_ADDRESS + (config.currentDataIndex % MAX_DATA_ENTRIES) * sizeof(TemperatureData);
@@ -143,7 +150,7 @@ bool saveTemperatureReading(float temperature) {
     data.index = config.currentDataIndex;
     data.temperature = temperature;
     
-    // Write to flash
+    // Write to flash; if failed, blink
     if (flash.program(&data, dataAddress, sizeof(TemperatureData)) != 0) {
         blinkDebugPin(10, 50, 50);
         return false;
@@ -152,81 +159,51 @@ bool saveTemperatureReading(float temperature) {
     // Update data index
     config.currentDataIndex++;
     
-    // Save updated config
     return saveConfig();
 }
 
-// Parse initialization packet; format: <epoch_time,personal_id,wakeup_interval>
-bool initializeDevice(const char* packet) {
-    // Make a copy of the packet to modify
-    char buffer[64];
-    strncpy(buffer, packet, sizeof(buffer) - 1);
-    buffer[sizeof(buffer) - 1] = '\0';
-    
-    // Remove < and > characters if present
-    if (buffer[0] == '<') {
-        memmove(buffer, buffer + 1, strlen(buffer));
-        char* endBracket = strchr(buffer, '>');
-        if (endBracket) {
-            *endBracket = '\0';
-        }
+// Function to initialize device with parameters from packed data
+bool initializeDevice(const uint8_t* packedData) {
+    InitializationData initData;
+
+    // Copy the packed data into our structure
+    memcpy(&initData, packedData, sizeof(InitializationData));
+
+    // Verify checksum
+    uint32_t calculatedChecksum = 0;
+    const uint8_t* dataPtr = packedData;
+    // Sum all bytes except the last 4 bytes (which are the checksum)
+    for (size_t i = 0; i < (sizeof(InitializationData) - sizeof(uint32_t)); ++i) {
+        calculatedChecksum += dataPtr[i];
     }
+    calculatedChecksum &= 0xFFFFFFFF;
     
-    // Parse comma-separated values
-    char* token = strtok(buffer, ",");
-    if (!token) {
-        serial.printf("[ERROR] Missing timestamp\r\n");
+    if (calculatedChecksum != initData.checksum) {
+        USBSerial& serial = getSerial();
+        serial.printf("CHECKSUM_ERROR\r\n");
         return false;
     }
-    config.initialTimestamp = strtoul(token, NULL, 10);
+
+    // Copy the initialization data to our config
+    config.initialTimestamp = initData.timestamp;
+    config.wakeupInterval = initData.wakeupInterval;
     
-    token = strtok(NULL, ",");
-    if (!token) {
-        serial.printf("[ERROR] Missing personal ID\r\n");
-        return false;
-    }
-    strncpy(config.personalId, token, sizeof(config.personalId) - 1);
-    config.personalId[sizeof(config.personalId) - 1] = '\0';
-    
-    token = strtok(NULL, ",");
-    if (!token) {
-        serial.printf("[ERROR] Missing wake-up interval\r\n");
-        return false;
-    }
-    config.wakeupInterval = strtoul(token, NULL, 10);
+    // Safely copy personal ID with explicit null termination
+    memset(config.personalId, 0, sizeof(config.personalId));  // Zero out first
+    strncpy(config.personalId, initData.personalId, sizeof(config.personalId) - 1);
+    config.personalId[sizeof(config.personalId) - 1] = '\0';  // Ensure null termination
     
     // Reset data index
     config.currentDataIndex = 0;
+
+    // Change mode and save
+    currentMode = MODE_LOGGING;
+    config.mode = currentMode;
     
-    // Save configuration
     return saveConfig();
 }
 
-// Function to send a formatted response
-void sendResponse(const char* prefix, const char* type, const char* data = NULL) {
-    if (data != NULL) {
-        serial.printf("%s%s;%s\r\n", prefix, type, data);
-    } else {
-        serial.printf("%s%s;\r\n", prefix, type);
-    }
-}
-
-// Prepare the device for complete shutdown (to begin logging on next power-up)
-void prepareForLogging() {
-    
-    // Send initialization confirmation message
-    sendResponse(RESP_PREFIX, RESP_OK, "INITIALIZED");
-    ThisThread::sleep_for(1000);
-
-    while(serial.available()) {
-        serial.getc(); // Discard any pending input
-    }
-    
-    // Indicate the device is ready for logging
-    blinkDebugPin(5, 100, 100);
-}
-
-// Power optimization functions
+// Function to optimize power for low power mode
 void optimizePower() {
     // Only disable communication in logging mode
     if (currentMode == MODE_LOGGING) {
@@ -249,6 +226,7 @@ void optimizePower() {
     SCB->SCR |= SCB_SCR_SEVONPEND_Msk;
 }
 
+// Function to restore system functions after waking up
 void restoreSystem() {
     // Clear sleep deep bit
     SCB->SCR &= ~SCB_SCR_SLEEPDEEP_Msk;
@@ -307,62 +285,32 @@ void enterSleep() {
 
 // Function to handle device status request
 void handleStatusRequest() {
-    // Send appropriate status based on device state
-    if (currentMode == MODE_LOGGING) {
-        sendResponse(RESP_PREFIX, RESP_OK, "LOGGING");
-    } else if (config.currentDataIndex > 0) {
-        sendResponse(RESP_PREFIX, RESP_OK, "HAS_DATA");
-    } else if (config.initialTimestamp > 0) {
-        sendResponse(RESP_PREFIX, RESP_OK, "CONFIGURED");
+    USBSerial& serial = getSerial();
+    if (config.currentDataIndex > 0) {
+        serial.printf("HAS_DATA\r\n");
     } else {
-        sendResponse(RESP_PREFIX, RESP_OK, "NOT_CONFIGURED");
+        serial.printf("FIRST_CONFIGURATION\r\n");
     }
 }
 
-// Function to handle initialization request
-void handleInitRequest() {
-    sendResponse(RESP_PREFIX, RESP_OK, "READY_FOR_INIT");
-}
+// Function to send data in readable format(CSV)
+void sendReadableData() {
+    USBSerial& serial = getSerial();
 
-// Function to handle data retrieval
-void handleRetrieveRequest() {
     // Check if there's data to retrieve
     if (config.currentDataIndex == 0) {
-        sendResponse(RESP_PREFIX, RESP_ERROR, "NO_DATA");
+        serial.printf("NO_DATA\r\n");
         return;
     }
     
-    // Set mode to data retrieval
-    currentMode = MODE_DATA_RETRIEVAL;
-    saveConfig();
-    
-    sendResponse(RESP_PREFIX, RESP_OK, "SENDING_DATA");
-    
-    // Send data
-    sendDataToHost();
-}
-
-// Function to send all data to host
-void sendDataToHost() {
     // Send metadata first
-    serial.printf("Initial Timestamp:%lu\r\n", config.initialTimestamp);
-    serial.printf("Wake-up Interval:%lu\r\n", config.wakeupInterval);
-    serial.printf("Personal ID:%s\r\n", config.personalId);
-    serial.printf("Total Readings:%lu\r\n", config.currentDataIndex);
+    serial.printf("Initial Timestamp,%lu\r\n", config.initialTimestamp);
+    serial.printf("Wake-up Interval,%lu\r\n", config.wakeupInterval);
+    serial.printf("Personal ID,%s\r\n", config.personalId);
+    serial.printf("Total Readings,%lu\r\n\r\n", config.currentDataIndex);
     
-    // Check if there's data to retrieve
-    if (config.currentDataIndex == 0) {
-        sendResponse(DATA_PREFIX, DATA_BEGIN);
-        serial.printf("No data available.\r\n");
-        sendResponse(DATA_PREFIX, DATA_END);
-        // Return to command mode after data retrieval
-        currentMode = MODE_IDLE;
-        saveConfig();
-        return;
-    }
-    
-    // Signal data transfer start
-    sendResponse(DATA_PREFIX, DATA_BEGIN);
+    // Send column headers
+    serial.printf("Timestamp,Temperature\r\n");
     
     // Read and send data entries
     TemperatureData data;
@@ -377,108 +325,130 @@ void sendDataToHost() {
             continue;
         }
         
+        // Calculate timestamp
+        uint32_t timestamp = config.initialTimestamp + (data.index * config.wakeupInterval);
+        
         // Send data point
-        serial.printf("%lu,%.2f\r\n", data.index, data.temperature);
+        serial.printf("%lu,%.2f\r\n", timestamp, data.temperature);
         ThisThread::sleep_for(5); // Small delay to prevent overrun
     }
     
-    // Signal data transfer end
-    sendResponse(DATA_PREFIX, DATA_END);
-    
-    // Return to command mode after data retrieval
-    currentMode = MODE_IDLE;
-    saveConfig();
+    // Send end marker
+    serial.printf(END_DATA_MARKER);
 }
 
-// Process a complete command
-void processCommand(char* buffer) {
-    // Check for structured command format
-    if (strncmp(buffer, CMD_PREFIX, strlen(CMD_PREFIX)) == 0) {
-        char* cmdStart = buffer + strlen(CMD_PREFIX);
-        char* cmdEnd = strchr(cmdStart, ';');
+// Function to process incoming serial command
+void processSerialCommand() {
+    USBSerial& serial = getSerial();
+    if (serial.available()) {
+        char cmd = serial.getc();
         
-        if (cmdEnd == NULL) {
-            sendResponse(RESP_PREFIX, RESP_ERROR, "Invalid command format");
-            return;
-        }
+        switch (cmd) {
+            case '?': // Handshake request
+                serial.printf("Hello World!\r\n");
+                break;
+            case '!': // Status request
+                handleStatusRequest();
+                break;
+            case 'i': // Initialize with binary timestamp
+                {
+                    // Size of the packed initialization data
+                    const size_t dataSize = sizeof(InitializationData);
+                    uint8_t packedData[dataSize];
+
+                    serial.printf("READY_FOR_INIT\r\n");
+
+                    unsigned long startTime = millis();
+                    int bytesRead = 0;
         
-        // Extract command portion
-        *cmdEnd = '\0';
-        cmdEnd++; // Move to payload start
-        
-        // Process based on command type
-        if (strcmp(cmdStart, CMD_STATUS) == 0) {
-            handleStatusRequest();
-        }
-        else if (strcmp(cmdStart, CMD_INIT) == 0) {
-            // Check if this has a payload
-            if (*cmdEnd != '\0') {
-                if (initializeDevice(cmdEnd)) {
-                    ThisThread::sleep_for(500);
-                    prepareForLogging();
+                    while (bytesRead < dataSize) {
+                        if (millis() - startTime > 5000) {
+                            serial.printf("TIMEOUT\r\n");
+                            return;
+                        }
+                        
+                        if (serial.available()) {
+                            packedData[bytesRead++] = (uint8_t)serial.getc();
+                        } else {
+                            ThisThread::sleep_for(10);
+                        }
+                    }
 
-                    ThisThread::sleep_for(1000);
-
-                    NRF_UARTE0->ENABLE = 0;
-                    NRF_UART0->ENABLE = 0;
-                    NRF_USBD->ENABLE = 0;
-                    ThisThread::sleep_for(100);
-
-                    NRF_POWER->SYSTEMOFF = 1;
-                } else {
-                    serial.printf("[ERROR] Failed to initialize device\r\n");
-                    sendResponse(RESP_PREFIX, RESP_ERROR, "INIT_FAILED");
+                    // Initialize the device with the packed data
+                    if (initializeDevice(packedData)) {                        
+                        // Send initialization confirmation
+                        serial.printf("INITIALIZED\r\n");
+                        ThisThread::sleep_for(2000);
+                        blinkDebugPin(5, 100, 100);
+                        
+                        // Deep sleep until next power on
+                        releaseSerial();
+                        NRF_POWER->SYSTEMOFF = 1;
+                    } else {
+                        serial.printf("INIT_FAILED\r\n");
+                    }
                 }
-            } else {
-                handleInitRequest();
-            }
+                break;
+            case 'r': // Send data in readable format
+                currentMode = MODE_DATA_RETRIEVAL;
+                saveConfig();
+                sendReadableData();
+                currentMode = MODE_IDLE;
+                saveConfig();
+                break;
+            default:
+                // Unknown command
+                serial.printf("UNKNOWN\r\n");
+                break;
         }
-        else if (strcmp(cmdStart, CMD_RETRIEVE) == 0) {
-            handleRetrieveRequest();
-        }
-        else {
-            sendResponse(RESP_PREFIX, RESP_ERROR, "Unknown command");
-        }
-    } else {
-        sendResponse(RESP_PREFIX, RESP_ERROR, "Invalid command format");
-    }
-}
-
-// Process incoming serial data
-void processSerialInput() {
-    while (serial.available()) {
-        char c = serial.getc();
-        
-        // Handle end of command
-        if (c == '\n' || c == '\r') {
-            if (cmdIndex > 0) {
-                cmdBuffer[cmdIndex] = '\0';
-                processCommand(cmdBuffer);
-                cmdIndex = 0; // Reset buffer
-            }
-        } 
-        // Add to buffer if space available
-        else if (cmdIndex < MAX_BUFFER_SIZE - 1) {
-            cmdBuffer[cmdIndex++] = c;
-        }
-        // Buffer overflow
-        else {
-            cmdIndex = 0; // Reset buffer
-            sendResponse(RESP_PREFIX, RESP_ERROR, "Command too long");
-        }
-    }
-}
-
-// Check for incoming serial commands for non-logging mode
-void checkSerialCommands() {
-    if (currentMode != MODE_LOGGING) {
-        processSerialInput();
     }
 }
 
 void setup() {
     // Configure debug pin
     nrf_gpio_cfg_output(DEBUG_GPIO_PIN);
+
+    // Initialize flash and load configuration
+    if (flash.init() != 0) {
+        blinkDebugPin(5, 500, 50);
+        currentMode = MODE_IDLE;  // Default to command mode on error
+        return;
+    }
+
+    // Read configuration from flash immediately to determine mode
+    if (flash.read(&config, CONFIG_ADDRESS, sizeof(ConfigData)) == 0) {
+        if (config.initialTimestamp > 0 && strlen(config.personalId) > 0 && 
+            strcmp(config.personalId, "DEFAULT_ID") != 0) {
+            // Check reset reason to detect unexpected power loss
+            uint32_t resetReason = NRF_POWER->RESETREAS;
+            
+            // Clear reset reason register for next time
+            NRF_POWER->RESETREAS = NRF_POWER->RESETREAS;
+
+            const uint32_t RESET_PIN_BIT = (1UL << 0);
+            const uint32_t LOW_VOLTAGE_BIT = (1UL << 17); 
+            const uint32_t SYSTEM_OFF_BIT = (1UL << 16);
+
+           bool wasUnexpectedReset = (resetReason & 
+                (RESET_PIN_BIT | LOW_VOLTAGE_BIT | SYSTEM_OFF_BIT));
+                
+            if (wasUnexpectedReset && config.currentDataIndex > 0) {
+                currentMode = MODE_IDLE;
+                config.mode = currentMode;
+                saveConfig();
+            } else {
+                // Normal startup - use configured mode (LOGGING)
+                currentMode = config.mode;
+                NRF_USBD->ENABLE = 0;
+                NRF_UARTE0->ENABLE = 0;
+                NRF_UART0->ENABLE = 0;
+            }
+        } else {
+            currentMode = MODE_IDLE;
+            config.mode = currentMode;
+            saveConfig();
+        }    
+    }
 
     // Initialize sensor power pins
     pinMode(P0_22, OUTPUT);
@@ -500,85 +470,35 @@ void setup() {
     HS300x.begin();
     ThisThread::sleep_for(500);
 
-    // Initialize flash and load configuration
-    if (flash.init() != 0) {
-        blinkDebugPin(5, 500, 50);
-        currentMode = MODE_IDLE;  // Default to command mode on error
-        return;
-    }
-    
     struct FlashGuard {
         ~FlashGuard() { flash.deinit(); }
     } flash_guard;
-    
-    // Read configuration from flash
-    bool validConfig = false;
-    if (flash.read(&config, CONFIG_ADDRESS, sizeof(ConfigData)) == 0) {
-        // Valid read from flash
-        if (config.magicNumber == 0xABCD1234) {
-            validConfig = true;
-        }
-    }
-    
-    // Determine the appropriate mode based on device state
-    if (validConfig) {
-        // Check if this device has been configured for logging
-        if (config.initialTimestamp > 0 && 
-            strlen(config.personalId) > 0 && 
-            strcmp(config.personalId, "DEFAULT_ID") != 0) {
-                        
-            // If we already have collected data, go to IDLE mode for data retrieval
-            if (config.currentDataIndex > 0) {
-                currentMode = MODE_IDLE;
-            } else {
-                currentMode = MODE_LOGGING;
-            }
-        } else {
-            // Not fully configured yet, stay in IDLE
-            currentMode = MODE_IDLE;
-        }
-    } else {
-        // No valid config, default to command mode
-        currentMode = MODE_IDLE;
-    }
-
-    config.mode = currentMode;
-    saveConfig();
 }
 
 int main() {
+    releaseSerial();
     setup();
 
     while (true) {
-        // Handle each mode differently
         switch (currentMode) {
             case MODE_LOGGING: {
-                // In logging mode, collect temperature readings with deep sleep between
-                nrf_gpio_pin_clear(DEBUG_GPIO_PIN);
-                
-                // Enter low power mode until timer expires
+                nrf_gpio_pin_clear(DEBUG_GPIO_PIN);                
                 enterSleep();
                 
-                // Briefly indicate activity
                 nrf_gpio_pin_set(DEBUG_GPIO_PIN);
                 
-                // Read temperature and save it
                 float temperature = HS300x.readTemperature();
-                saveTemperatureReading(temperature);
-                
-                // Turn off the debug pin again
+                saveTemperatureReading(temperature);                
                 nrf_gpio_pin_clear(DEBUG_GPIO_PIN);
                 break;
             }
             case MODE_DATA_RETRIEVAL: {
-                // In data retrieval mode, handle retrieval commands
-                sendDataToHost();
+                processSerialCommand();
                 break;
             }
             case MODE_IDLE:
             default: {
-                // In command mode, check for commands and sleep briefly
-                checkSerialCommands();
+                processSerialCommand();
                 ThisThread::sleep_for(100);
                 break;
             }
