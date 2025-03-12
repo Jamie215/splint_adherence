@@ -191,6 +191,7 @@ def initialize_arduino(epoch_time: int, personal_id: Union[int, str] = "", wakeu
 def download_file(file_path: str) -> Dict[str, Any]:
     """
     Download data from the Arduino and save it to a file.
+    Preserves the original CSV format with metadata at the top.
     
     Args:
         file_path: Path to save the data
@@ -214,132 +215,63 @@ def download_file(file_path: str) -> Dict[str, Any]:
         arduino_serial.reset_input_buffer()
         arduino_serial.write(b"r")
         
-        with open(file_path, "w", newline='') as f:
-            # Buffer to accumulate data
-            data_buffer = bytearray()
+        # Use a StringIO buffer to collect all data
+        output_buffer = io.StringIO()
+        
+        # Buffer to accumulate data from serial
+        data_buffer = bytearray()
 
-            in_metadata = True
-            metadata_lines = []
+        in_metadata = True  # Start in metadata section
+        END_DATA_MARKER = b"END_DATA"
+        
+        # Read data in chunks
+        start_time = time.time()
+        while True:
+            # Read a chunk of data
+            chunk = arduino_serial.read(min(4096, max(1, arduino_serial.in_waiting)))
+            if not chunk:
+                # If no data and we've been reading for a while, timeout
+                if time.time() - start_time > READ_TIMEOUT:
+                    raise TimeoutError("Timeout waiting for data")
+                time.sleep(0.1)
+                continue
 
-            end_marker = b"END_DATA"
-
-            # Read data in chunks
-            start_time = time.time()
-            while True:
-                chunk = arduino_serial.read(min(4096, max(1, arduino_serial.in_waiting)))
-                if not chunk:
-                    # If no data and we've been reading for a while, timeout
-                    if time.time() - start_time > READ_TIMEOUT:
-                        raise TimeoutError("Timeout waiting for data")
-                    time.sleep(0.1)
-                    continue
-
-                data_buffer.extend(chunk)
-
-                if end_marker in data_buffer:
-                    end_idx = data_buffer.find(end_marker)
-                    valid_data = data_buffer[:end_idx]
-
-                    # Process any remaining data before the end marker
-                    lines = valid_data.split(b'\r\n')
-                    for line in lines:
-                        if not line:  # Skip empty lines
-                            continue
-                            
-                        line_str = line.decode('utf-8')
-                        
-                        if in_metadata:
-                            if line_str.startswith("Timestamp,Temperature"):
-                                in_metadata = False
-                                f.write("Timestamp,Temperature\r\n")
-                            else:
-                                # Process metadata line
-                                if line_str.startswith("Initial Timestamp,"):
-                                    parts = line_str.split(',', 1)
-                                    if len(parts) == 2 and parts[1].strip().isdigit():
-                                        # Convert timestamp
-                                        epoch_time = int(parts[1].strip())
-                                        iso_time = datetime.datetime.fromtimestamp(
-                                            epoch_time, tz=datetime.timezone.utc
-                                        ).strftime('%Y-%m-%d %H:%M:%S')
-                                        metadata_lines.append(f"Initial Timestamp,{iso_time}")
-                                    else:
-                                        metadata_lines.append(line_str)
-                                else:
-                                    metadata_lines.append(line_str)
-                        else:
-                            # Data section
-                            parts = line_str.split(',', 1)
-                            if len(parts) == 2 and parts[0].strip().isdigit():
-                                # Convert epoch timestamp
-                                epoch_time = int(parts[0].strip())
-                                iso_time = datetime.datetime.fromtimestamp(
-                                    epoch_time, tz=datetime.timezone.utc
-                                ).strftime('%Y-%m-%d %H:%M:%S')
-                                f.write(f"{iso_time},{parts[1]}\r\n")
-                            else:
-                                # Non-data line, skip
-                                pass
-                    
-                    # Write metadata at the beginning
-                    f.seek(0)
-                    for line in metadata_lines:
-                        f.write(line + "\r\n")
-                    if metadata_lines:
-                        f.write("\r\n")
-                    
-                    break
+            # Add to buffer
+            data_buffer.extend(chunk)
+            
+            # Check if we have the end marker
+            if END_DATA_MARKER in data_buffer:
+                # Found the end marker, process remaining data and exit
+                end_idx = data_buffer.find(END_DATA_MARKER)
+                valid_data = data_buffer[:end_idx]
+                
+                # Process lines up to the marker
+                process_buffer_data(valid_data, output_buffer, in_metadata)
+                break
             
             # Process complete lines from buffer
             if b'\r\n' in data_buffer:
+                # Split on line endings
                 lines = data_buffer.split(b'\r\n')
                 # Keep the last (possibly incomplete) line
-                data_buffer = lines.pop()
+                last_line = lines.pop()
                 
-                # Process complete lines
-                for line in lines:
-                    if not line:  # Skip empty lines
-                        continue
-                        
-                    line_str = line.decode('utf-8')
-                    
-                    if in_metadata:
-                        if line_str.startswith("Timestamp,Temperature"):
-                            in_metadata = False
-                            found_header = True
-                            f.write("Timestamp,Temperature\r\n")
-                        else:
-                            # Process metadata line
-                            if line_str.startswith("Initial Timestamp,"):
-                                parts = line_str.split(',', 1)
-                                if len(parts) == 2 and parts[1].strip().isdigit():
-                                    # Convert timestamp
-                                    epoch_time = int(parts[1].strip())
-                                    iso_time = datetime.datetime.fromtimestamp(
-                                        epoch_time, tz=datetime.timezone.utc
-                                    ).strftime('%Y-%m-%d %H:%M:%S')
-                                    metadata_lines.append(f"Initial Timestamp,{iso_time}")
-                                else:
-                                    metadata_lines.append(line_str)
-                            else:
-                                metadata_lines.append(line_str)
-                    else:
-                        # Data section
-                        parts = line_str.split(',', 1)
-                        if len(parts) == 2 and parts[0].strip().isdigit():
-                            # Convert epoch timestamp
-                            epoch_time = int(parts[0].strip())
-                            iso_time = datetime.datetime.fromtimestamp(
-                                epoch_time, tz=datetime.timezone.utc
-                            ).strftime('%Y-%m-%d %H:%M:%S')
-                            f.write(f"{iso_time},{parts[1]}\r\n")
-                        else:
-                            # Non-data line, skip
-                            pass
+                # Process all complete lines
+                complete_data = b'\r\n'.join(lines) + b'\r\n'
+                in_metadata = process_buffer_data(complete_data, output_buffer, in_metadata)
+                
+                # Keep only the incomplete line in the buffer
+                data_buffer = last_line
         
+        # Once all data is processed, write to file
+        with open(file_path, 'w', newline='') as f:
+            f.write(output_buffer.getvalue())
+            
         # Read the processed file
         with open(file_path, 'r') as f:
             csv_content = f.read()
+        
+        f.close()
 
         return {
             'content': csv_content,
@@ -355,6 +287,78 @@ def download_file(file_path: str) -> Dict[str, Any]:
         # Restore original timeout
         if arduino_serial and arduino_serial.is_open:
             arduino_serial.timeout = original_timeout
+
+
+def process_buffer_data(data: bytearray, output: io.StringIO, in_metadata: bool) -> bool:
+    """
+    Process a chunk of data from the Arduino.
+    
+    Args:
+        data: Buffer of data to process
+        output: StringIO buffer to write processed data to
+        in_metadata: Whether we're in the metadata section
+        
+    Returns:
+        Updated in_metadata state
+    """
+    # Split into lines
+    lines = data.split(b'\r\n')
+    
+    # Process each line
+    for line in lines:
+        if not line:  # Skip empty lines
+            continue
+            
+        # Try to decode line with error handling
+        try:
+            line_str = line.decode('utf-8').strip()
+        except UnicodeDecodeError:
+            # Skip lines that can't be decoded properly
+            print(f"Warning: Skipping non-UTF-8 line of length {len(line)}")
+            continue
+        
+        # Process the line according to state
+        if in_metadata:
+            if line_str.startswith("Timestamp,Temperature"):
+                # Found header line, switch to data mode
+                in_metadata = False
+                output.write("Timestamp,Temperature\r\n")
+            elif line_str.startswith("Initial Timestamp,"):
+                # Process timestamp in metadata
+                parts = line_str.split(',', 1)
+                if len(parts) > 1 and parts[1].strip().isdigit():
+                    # Convert timestamp to readable format
+                    epoch_time = int(parts[1].strip())
+                    iso_time = datetime.datetime.fromtimestamp(
+                        epoch_time, tz=datetime.timezone.utc
+                    ).strftime('%Y-%m-%d %H:%M:%S')
+                    output.write(f"Initial Timestamp,{iso_time}\r\n")
+                else:
+                    # Keep original line if conversion fails
+                    output.write(f"{line_str}\r\n")
+            else:
+                # Other metadata lines
+                output.write(f"{line_str}\r\n")
+        else:
+            # Data section
+            parts = line_str.split(',', 1)
+            if len(parts) == 2 and parts[0].strip().isdigit():
+                # It's a data line with timestamp
+                try:
+                    epoch_time = int(parts[0].strip())
+                    iso_time = datetime.datetime.fromtimestamp(
+                        epoch_time, tz=datetime.timezone.utc
+                    ).strftime('%Y-%m-%d %H:%M:%S')
+                    output.write(f"{iso_time},{parts[1]}\r\n")
+                except (ValueError, OverflowError) as e:
+                    # Handle invalid timestamps
+                    print(f"Warning: Invalid timestamp {parts[0]}: {e}")
+                    output.write(f"{line_str}\r\n")
+            else:
+                # Non-data line in data section (unusual but possible)
+                output.write(f"{line_str}\r\n")
+    
+    return in_metadata
 
 def disconnect_arduino() -> None:
     """
