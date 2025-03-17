@@ -36,7 +36,7 @@ def set_modal_content(initialize=False, selected_dt=None, download=False, error=
                 html.Div([
                     "The device has been initialized for ",
                     html.Span(selected_dt, style={"color": "RoyalBlue", "font-weight":"bold"}),
-                    " and powered down. It will be counting steps in the next powerup.",
+                    " and powered down. It will be collecting temperature in the next powerup.",
                     html.Br(),
                     html.Br(),
                     " You may now disconnect the device.",
@@ -353,15 +353,15 @@ def register_index_callbacks():
                     arduino_status = arduino.get_device_status()
                     if arduino.arduino_serial:
                         if "Initialize Arduino" in str(curr_children):
-                            if arduino_status in [b"FIRST_CONFIGURATION", b"HAS_DATA"]:
+                            if arduino_status in [b"NEED_CONFIGURATION", b"HAS_DATA"]:
                                 updated_children = [curr_children[0]]
                                 updated_children.extend(set_modal_content(initialize=True, footer_view="Initialize"))
                                 return True, updated_children, json.dumps({"is_open": True})
                         elif "Download Data" in str(curr_children):
-                            if arduino_status == b"FIRST_CONFIGURATION":
+                            if arduino_status == b"NEED_CONFIGURATION":
                                 updated_children = [
                                     curr_children[0],
-                                    dbc.ModalBody("First time initiating the device! No data available"),
+                                    dbc.ModalBody("Need to initiating the device! No data available"),
                                     curr_children[2]
                                 ]
                                 return True, updated_children, json.dumps({"is_open": True})

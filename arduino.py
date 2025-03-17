@@ -172,7 +172,8 @@ def initialize_arduino(epoch_time: int, personal_id: Union[int, str] = "", wakeu
                     print(f"Final response: {response}")
                     break
             time.sleep(0.1)
-        
+        # Delay to wait for Arduino to be SystemOFF
+        time.sleep(3)
         return True, "Device initialized successfully"
         
     except Exception as e:
