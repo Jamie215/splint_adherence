@@ -102,7 +102,7 @@ def get_device_status() -> bytes:
         arduino_serial = None
         return b"ERROR"
 
-def initialize_arduino(epoch_time: int, personal_id: Union[int, str] = "", wakeup_interval: int = 30) -> Tuple[bool, str]:
+def initialize_arduino(epoch_time: int, personal_id: Union[int, str] = "", wakeup_interval: int = 300) -> Tuple[bool, str]:
     """
     Initialize the Arduino with timestamp, ID and wakeup interval
     

@@ -144,21 +144,7 @@ def set_modal_content(initialize=False, selected_dt=None, download=False, error=
             dbc.Col([
                 html.Label("Personal ID", style={"display":"none"} if not initialize else {}),
                 dbc.Input(id="input-personal-id", type="number", min=0, max=65535, placeholder="0 to 65535", style={"display":"none"} if not initialize else {})
-            ], width=6
-            ),
-            dbc.Col([
-                html.Label("Wake up Interval", style={"display":"none"} if not initialize else {}),
-                dbc.Select(id="dropdown-wakeup-interval",
-                           options=[
-                                {"label": "5 minutes", "value": "300"},
-                                {"label": "10 minutes", "value": "600"},
-                                {"label": "30 minutes", "value": "1800"},
-                                {"label": "1 hour", "value": "3600"}
-                           ],
-                           value="300",
-                           style={"display":"none"} if not initialize else {}
-                )],
-                width=6
+            ], width=8
             )
         ])
     ]
@@ -312,10 +298,9 @@ def register_index_callbacks():
             State("date-picker", "date"),
             State("hour", "value"),
             State("minute", "value"),
-            State("input-personal-id", "value"),
-            State("dropdown-wakeup-interval", "value")],
+            State("input-personal-id", "value")],
             prevent_initial_call=True)
-    def toggle_action_modal(init_click, dl_click, re_attempt_click, connect_click, init_btn_click, is_open, curr_children, json_data, date, hour, minute, personal_id, wakeup_interval):
+    def toggle_action_modal(init_click, dl_click, re_attempt_click, connect_click, init_btn_click, is_open, curr_children, json_data, date, hour, minute, personal_id):
         """
         Handles all actions related to the modal:
         - Initialize Device
@@ -373,7 +358,7 @@ def register_index_callbacks():
                 # Type 5: "Initialize" button triggered
                 if triggered_id == "initialize-btn":
                     # Validate inputs
-                    if not all([date, hour, minute, personal_id, wakeup_interval]):
+                    if not all([date, hour, minute, personal_id]):
                         updated_children = [curr_children[0]]
                         updated_children.extend(set_modal_content(error="Please complete all fields."))
                         return True, updated_children, json.dumps({"is_open": True})
@@ -388,7 +373,7 @@ def register_index_callbacks():
                     epoch_time = int(selected_datetime.astimezone(pytz.utc).timestamp())
                     
                     # Send initialization command to Arduino
-                    arduino.initialize_arduino(epoch_time, int(personal_id), int(wakeup_interval))
+                    arduino.initialize_arduino(epoch_time, int(personal_id))
 
                     formatted_dt = selected_datetime.strftime("%A, %B %d at %I:%M %p")
                     updated_children = [curr_children[0]]

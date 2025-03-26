@@ -16,14 +16,16 @@ using namespace rtos;
 #define FLASH_PAGE_SIZE          4096  // 4KB pages on nRF52840
 #define CONFIG_ADDRESS           0x70000
 #define DATA_START_ADDRESS       0x80000
-#define MAX_DATA_ENTRIES         1000
+#define MAX_DATA_ENTRIES         15000
+#define WDT_RESET_FLAG_ADDRESS   0x78000  // Special address to track watchdog resets
+#define RESET_FLAG_VALUE         0xDEADBEEF
 
 #define END_DATA_MARKER "END_DATA"
 
-// Simplified operation modes - only these three core states
+// Simplified operation modes - only these two core states
 enum OperationMode {
     MODE_IDLE = 0,       // Default mode, waits for commands/initialization
-    MODE_LOGGING = 1,       // Collecting temperature data
+    MODE_LOGGING = 1,    // Collecting temperature data
 };
 
 // Data structures
@@ -59,12 +61,11 @@ uint32_t currentIndex = 0;
 // Current operation mode
 OperationMode currentMode = MODE_IDLE;
 
-// Timer for wake-up
-LowPowerTimeout wakeupTimer;
-volatile bool wakeupFlag = false;
-
 // Flash access object
 FlashIAP flash;
+
+// Flag to indicate if we booted from a watchdog reset
+bool wasWatchdogReset = false;
 
 // Serial communication-related
 USBSerial* serialPtr = nullptr;
@@ -92,11 +93,6 @@ void releaseSerial() {
     }
 }
 
-// Callback for timer
-void wakeupCallback() {
-    wakeupFlag = true;
-}
-
 // Function to save configuration to flash
 bool saveConfig() {
     // Erase config page
@@ -109,7 +105,6 @@ bool saveConfig() {
     result = flash.program(&config, CONFIG_ADDRESS, sizeof(ConfigData));
     ThisThread::sleep_for(100);
     if (result != 0) {
-        // serial.printf("DEBUG: Flash program failed: %d\r\n", result);
         return false;
     }
 
@@ -117,8 +112,6 @@ bool saveConfig() {
     ConfigData verifyConfig;
     if (flash.read(&verifyConfig, CONFIG_ADDRESS, sizeof(ConfigData)) != 0 ||
         memcmp(&config, &verifyConfig, sizeof(ConfigData)) != 0) {
-        // Verification failed
-        // serial.printf("DEBUG: Verification failed: %d\r\n", result);
         return false;
     }
     
@@ -139,17 +132,12 @@ void blinkDebugPin(int times, int onTimeMs = 200, int offTimeMs = 200) {
 
 // Function to save temperature reading to flash
 bool saveTemperatureReading(float temperature) {
-    // USBSerial& serial = getSerial();
-    // serial.printf("DEBUG: Save for index %lu, temperature %.2f\r\n", 
-    //              currentIndex, temperature);
-    
     uint32_t dataOffset = currentIndex * sizeof(TemperatureData);
     uint32_t dataAddress = DATA_START_ADDRESS + dataOffset;
     
     // Sanity check the address is within valid flash range
     if (dataAddress < flash.get_flash_start() || 
         dataAddress + sizeof(TemperatureData) > flash.get_flash_start() + flash.get_flash_size()) {
-        // serial.printf("DEBUG: Invalid flash address 0x%08X\r\n", dataAddress);
         return false;
     }
     
@@ -162,14 +150,12 @@ bool saveTemperatureReading(float temperature) {
     int writeResult = flash.program(&data, dataAddress, sizeof(TemperatureData));
     ThisThread::sleep_for(100);
     if (writeResult != 0) {
-        // serial.printf("DEBUG: Flash write failed with code %d\r\n", writeResult);
         return false;
     }
         
     // Update data index
     currentIndex++;
     
-    releaseSerial();
     return true;
 }
 
@@ -219,10 +205,7 @@ bool initializeDevice(const uint8_t* packedData) {
     config.personalId[sizeof(config.personalId) - 1] = '\0';  // Ensure null termination
     
     currentIndex = 0;
-    
-    // Update to logging mode
-    currentMode = MODE_LOGGING;
-    config.mode = currentMode;
+    config.mode = MODE_IDLE;
     
     return saveConfig();
 }
@@ -231,15 +214,10 @@ bool initializeDevice(const uint8_t* packedData) {
 void optimizePower() {
     // Only disable communication in logging mode
     if (currentMode == MODE_LOGGING) {
-        NRF_UARTE0->ENABLE = 0;
-        NRF_UART0->ENABLE = 0;
         NRF_USBD->ENABLE = 0;
     }
     
-    // Stop high-frequency clock
-    NRF_CLOCK->TASKS_HFCLKSTOP = 1;
-    
-    // Disable unused analog peripherals  
+    // Disable unused analog peripherals
     NRF_SAADC->ENABLE = 0;
     NRF_PWM0->ENABLE = 0;
     NRF_PWM1->ENABLE = 0;
@@ -267,10 +245,71 @@ void restoreSystem() {
     }
 }
 
-// Enter sleep mode with wake-up timer
+// Configure the watchdog timer with a specific timeout
+void configureWatchdog(uint32_t timeoutSeconds) {
+    uint32_t timeout = (timeoutSeconds > 512) ? 512 : timeoutSeconds;
+    
+    // Calculate reload value - 32768 ticks per second 
+    uint32_t reload_value = timeout * 32768;
+    
+    // Configure watchdog to run in sleep
+    NRF_WDT->CONFIG = WDT_CONFIG_SLEEP_Msk;
+    
+    // Set reload value
+    NRF_WDT->CRV = reload_value;
+    
+    // Enable reload request 0
+    NRF_WDT->RREN = WDT_RREN_RR0_Msk;
+    
+    // Start the watchdog
+    NRF_WDT->TASKS_START = 1;
+}
+
+// Function to check if reset was caused by watchdog
+bool checkForWatchdogReset() {
+    // Check reset reason register
+    bool wdtReset = (NRF_POWER->RESETREAS & POWER_RESETREAS_DOG_Msk) != 0;
+    
+    // Clear the reset reason flag
+    NRF_POWER->RESETREAS = POWER_RESETREAS_DOG_Msk;
+    
+    // Additional check using our flag in flash
+    uint32_t flagValue;
+    if (flash.read(&flagValue, WDT_RESET_FLAG_ADDRESS, sizeof(uint32_t)) == 0 && 
+        flagValue == RESET_FLAG_VALUE) {
+        wdtReset = true;
+        
+        // Clear the flag
+        uint32_t clearValue = 0;
+        flash.erase(WDT_RESET_FLAG_ADDRESS, FLASH_PAGE_SIZE);
+        flash.program(&clearValue, WDT_RESET_FLAG_ADDRESS, sizeof(uint32_t));
+    }
+    
+    return wdtReset;
+}
+
+// Function to set watchdog reset flag before letting watchdog trigger
+bool setWatchdogResetFlag() {
+    // Erase the page first
+    int result = flash.erase(WDT_RESET_FLAG_ADDRESS, FLASH_PAGE_SIZE);
+    if (result != 0) {
+        return false;
+    }
+    
+    // Write our magic value
+    uint32_t flagValue = RESET_FLAG_VALUE;
+    result = flash.program(&flagValue, WDT_RESET_FLAG_ADDRESS, sizeof(uint32_t));
+    
+    return (result == 0);
+}
+
+// Modified enterSleep function that uses watchdog for timing
 void enterSleep() {
     // Only enter sleep in logging mode
     if (currentMode != MODE_LOGGING) return;
+    
+    // Set the reset flag so we can detect a planned watchdog reset
+    setWatchdogResetFlag();
     
     // End I2C communication
     Wire1.end();
@@ -281,33 +320,12 @@ void enterSleep() {
     
     optimizePower();
 
-    wakeupTimer.detach();
-
-    // Set up timer for wake-up
-    wakeupFlag = false;    
-    wakeupTimer.attach(&wakeupCallback, config.wakeupInterval);
+    configureWatchdog(config.wakeupInterval);
     
-    // Wait for timer interrupt
-    while (!wakeupFlag) {
+    // Now go to sleep and wait for watchdog to reset us
+    while (true) {
         __WFI();
-    }
-
-    wakeupTimer.detach();
-
-    // Restore system after wake-up
-    restoreSystem();
-    
-    // Restore peripherals & sensors for normal operation
-    pinMode(P0_14, INPUT_PULLUP);
-    pinMode(P0_15, INPUT_PULLUP);
-    
-    digitalWrite(P0_22, HIGH);
-    digitalWrite(P1_0, HIGH);
-    ThisThread::sleep_for(10);
-    
-    // Reinitialize I2C
-    Wire1.begin();
-    Wire1.setClock(100000);
+    }    
 }
 
 // Function to scan flash and find the highest used data index
@@ -436,6 +454,7 @@ void processSerialCommand() {
     }
 }
 
+// Updated setup function to handle watchdog resets
 void setup() {
     // Configure debug pin
     nrf_gpio_cfg_output(DEBUG_GPIO_PIN);
@@ -448,21 +467,39 @@ void setup() {
         return;
     }
 
-    // Read configuration from flash immediately to determine mode
-    flash.read(&config, CONFIG_ADDRESS, sizeof(ConfigData));
-    currentMode = config.mode;
-
-    // Handle configuration mode changes
-    if (config.mode == MODE_LOGGING) {
-        TemperatureData data;
-        currentIndex = findHighestDataIndex();
-
-        if (currentIndex > 0) {
-            currentMode = MODE_IDLE;
-            config.mode = currentMode;
-            saveConfig();
-        }
+     // Check if this was a watchdog reset
+    bool isWatchdogReset = (NRF_POWER->RESETREAS & POWER_RESETREAS_DOG_Msk) != 0;
+    
+    // Clear reset reason register
+    NRF_POWER->RESETREAS = NRF_POWER->RESETREAS;
+    
+    // Read the watchdog reset flag to confirm it was planned
+    uint32_t resetFlag = 0;
+    flash.read(&resetFlag, WDT_RESET_FLAG_ADDRESS, sizeof(uint32_t));
+    bool wasPlannedReset = (isWatchdogReset && resetFlag == RESET_FLAG_VALUE);
+    
+    // Clear the reset flag
+    if (resetFlag == RESET_FLAG_VALUE) {
+        flash.erase(WDT_RESET_FLAG_ADDRESS, FLASH_PAGE_SIZE);
     }
+    
+    // Load configuration
+    flash.read(&config, CONFIG_ADDRESS, sizeof(ConfigData));
+    
+    // Find current index for data storage
+    currentIndex = findHighestDataIndex();
+    
+    // Mode Switch Case: IDLE to LOGGING
+    if (config.mode == MODE_IDLE && currentIndex == 0) {
+        config.mode = MODE_LOGGING;
+        saveConfig();
+    } else if (config.mode == MODE_LOGGING && !wasPlannedReset) { // Mode Switch Case: LOGGING to IDLE
+        config.mode = MODE_IDLE;
+        saveConfig();
+    }
+    
+    // Set current mode from config
+    currentMode = config.mode;
 
     // Initialize sensor power pins
     pinMode(P0_22, OUTPUT);
@@ -491,22 +528,32 @@ void setup() {
 
 int main() {
     setup();
-    releaseSerial();
+    
+    // Keep serial interface if we're not in logging mode
+    if (currentMode == MODE_IDLE) {
+        getSerial();
+    } else {
+        releaseSerial();
+    }
 
     while (true) {
         switch (currentMode) {
             case MODE_LOGGING: {
-                nrf_gpio_pin_clear(DEBUG_GPIO_PIN);                
-                enterSleep();                
                 nrf_gpio_pin_set(DEBUG_GPIO_PIN);
-                
                 float temperature = HS300x.readTemperature();
-                if (saveTemperatureReading(temperature)) {
-                    nrf_gpio_pin_clear(DEBUG_GPIO_PIN);
-                } else {
+                nrf_gpio_pin_clear(DEBUG_GPIO_PIN);
+
+                // Save reading to flash
+                if (!saveTemperatureReading(temperature)) {
+                    // Error saving, switch to idle mode
                     currentMode = MODE_IDLE;
+                    config.mode = MODE_IDLE;
                     saveConfig();
-                }               
+                    continue;
+                }
+                
+                // Go to sleep
+                enterSleep();
                 break;
             }
             case MODE_IDLE:
