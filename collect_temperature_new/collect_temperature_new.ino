@@ -9,7 +9,6 @@
 using namespace mbed;
 using namespace rtos;
 
-#define DEBUG_GPIO_PIN NRF_GPIO_PIN_MAP(1, 9)
 #define DEFAULT_WAKEUP_INTERVAL 300 // Default 5 minutes (in seconds)
 
 // Flash storage parameters
@@ -17,9 +16,6 @@ using namespace rtos;
 #define CONFIG_ADDRESS           0x70000
 #define DATA_START_ADDRESS       0x80000
 #define MAX_DATA_ENTRIES         15000
-#define WDT_RESET_FLAG_ADDRESS   0x78000  // Special address to track watchdog resets
-#define RESET_FLAG_VALUE         0xDEADBEEF
-
 #define END_DATA_MARKER "END_DATA"
 
 // Simplified operation modes - only these two core states
@@ -63,9 +59,6 @@ OperationMode currentMode = MODE_IDLE;
 
 // Flash access object
 FlashIAP flash;
-
-// Flag to indicate if we booted from a watchdog reset
-bool wasWatchdogReset = false;
 
 // Serial communication-related
 USBSerial* serialPtr = nullptr;
@@ -118,18 +111,6 @@ bool saveConfig() {
     return true;
 }
 
-// Function to blink DEBUG_GPIO_PIN
-void blinkDebugPin(int times, int onTimeMs = 200, int offTimeMs = 200) {
-    for (int i = 0; i < times; i++) {
-        nrf_gpio_pin_set(DEBUG_GPIO_PIN);
-        ThisThread::sleep_for(onTimeMs);
-        nrf_gpio_pin_clear(DEBUG_GPIO_PIN);
-        if (i < times - 1) {
-            ThisThread::sleep_for(offTimeMs);
-        }
-    }
-}
-
 // Function to save temperature reading to flash
 bool saveTemperatureReading(float temperature) {
     uint32_t dataOffset = currentIndex * sizeof(TemperatureData);
@@ -170,6 +151,7 @@ bool initializeDevice(const uint8_t* packedData) {
     // Verify checksum
     uint32_t calculatedChecksum = 0;
     const uint8_t* dataPtr = packedData;
+
     // Sum all bytes except the last 4 bytes (which are the checksum)
     for (size_t i = 0; i < (sizeof(InitializationData) - sizeof(uint32_t)); ++i) {
         calculatedChecksum += dataPtr[i];
@@ -222,85 +204,37 @@ void optimizePower() {
     NRF_PWM0->ENABLE = 0;
     NRF_PWM1->ENABLE = 0;
     NRF_PWM2->ENABLE = 0;
-    
-    // Configure SCB for proper deep sleep
-    SCB->SCR |= SCB_SCR_SLEEPDEEP_Msk;
-    SCB->SCR |= SCB_SCR_SEVONPEND_Msk;
-}
+    NRF_PDM->ENABLE = 0;
+    NRF_I2S->ENABLE = 0;
 
-// Function to restore system functions after waking up
-void restoreSystem() {
-    // Clear sleep deep bit
-    SCB->SCR &= ~SCB_SCR_SLEEPDEEP_Msk;
-    SCB->SCR &= ~SCB_SCR_SEVONPEND_Msk;
-    
-    // Re-enable USB and UART when not in logging mode
-    if (currentMode != MODE_LOGGING) {
-        if (NRF_USBD->ENABLE == 0) {
-            NRF_USBD->ENABLE = 1;
-        }
-        if (NRF_UARTE0->ENABLE == 0) {
-            NRF_UARTE0->ENABLE = 1;
-        }
-    }
-}
+    // Stop high-frequency clock, but keep low-frequency clock for WDT
+    NRF_CLOCK->EVENTS_HFCLKSTARTED = 0;
+    NRF_CLOCK->TASKS_HFCLKSTOP = 1;
 
-// Configure the watchdog timer with a specific timeout
-void configureWatchdog(uint32_t timeoutSeconds) {
-    uint32_t timeout = (timeoutSeconds > 512) ? 512 : timeoutSeconds;
+    // Disable unused peripherals
+    NRF_TWI0->ENABLE = 0;
     
-    // Calculate reload value - 32768 ticks per second 
-    uint32_t reload_value = timeout * 32768;
-    
-    // Configure watchdog to run in sleep
-    NRF_WDT->CONFIG = WDT_CONFIG_SLEEP_Msk;
-    
-    // Set reload value
-    NRF_WDT->CRV = reload_value;
-    
-    // Enable reload request 0
-    NRF_WDT->RREN = WDT_RREN_RR0_Msk;
-    
-    // Start the watchdog
-    NRF_WDT->TASKS_START = 1;
-}
+    // Disable SPI module
+    NRF_SPI0->ENABLE = 0;
+    NRF_SPI1->ENABLE = 0;
 
-// Function to check if reset was caused by watchdog
-bool checkForWatchdogReset() {
-    // Check reset reason register
-    bool wdtReset = (NRF_POWER->RESETREAS & POWER_RESETREAS_DOG_Msk) != 0;
-    
-    // Clear the reset reason flag
-    NRF_POWER->RESETREAS = POWER_RESETREAS_DOG_Msk;
-    
-    // Additional check using our flag in flash
-    uint32_t flagValue;
-    if (flash.read(&flagValue, WDT_RESET_FLAG_ADDRESS, sizeof(uint32_t)) == 0 && 
-        flagValue == RESET_FLAG_VALUE) {
-        wdtReset = true;
-        
-        // Clear the flag
-        uint32_t clearValue = 0;
-        flash.erase(WDT_RESET_FLAG_ADDRESS, FLASH_PAGE_SIZE);
-        flash.program(&clearValue, WDT_RESET_FLAG_ADDRESS, sizeof(uint32_t));
-    }
-    
-    return wdtReset;
-}
+    // Disable UART/UARTE
+    NRF_UART0->TASKS_STOPTX = 1;
+    NRF_UART0->TASKS_STOPRX = 1;
+    NRF_UARTE0->TASKS_STOPTX = 1;
+    NRF_UARTE0->TASKS_STOPRX = 1;
+    NRF_UARTE0->ENABLE = 0;
 
-// Function to set watchdog reset flag before letting watchdog trigger
-bool setWatchdogResetFlag() {
-    // Erase the page first
-    int result = flash.erase(WDT_RESET_FLAG_ADDRESS, FLASH_PAGE_SIZE);
-    if (result != 0) {
-        return false;
-    }
+    // Disable radio (BLE)
+    NRF_RADIO->POWER = 0; 
+
+    // Disable other peripherals
+    NRF_QDEC->ENABLE = 0;
+    NRF_COMP->ENABLE = 0;
+    NRF_TEMP->TASKS_STOP = 1;
     
-    // Write our magic value
-    uint32_t flagValue = RESET_FLAG_VALUE;
-    result = flash.program(&flagValue, WDT_RESET_FLAG_ADDRESS, sizeof(uint32_t));
-    
-    return (result == 0);
+    // Enable DCDC converter for power efficiency
+    NRF_POWER->DCDCEN = 1;
 }
 
 // Modified enterSleep function that uses watchdog for timing
@@ -308,24 +242,36 @@ void enterSleep() {
     // Only enter sleep in logging mode
     if (currentMode != MODE_LOGGING) return;
     
-    // Set the reset flag so we can detect a planned watchdog reset
-    setWatchdogResetFlag();
-    
     // End I2C communication
     Wire1.end();
     
     // Power off sensors
+    HS300x.end();
     digitalWrite(P0_22, LOW);
     digitalWrite(P1_0, LOW);
+
+    digitalWrite(PIN_ENABLE_SENSORS_3V3, LOW);
+    digitalWrite(PIN_ENABLE_I2C_PULLUP, LOW);
     
     optimizePower();
 
-    configureWatchdog(config.wakeupInterval);
+    delay(config.wakeupInterval * 1000);
+
+    // Reset pins for sensor power
+    digitalWrite(P0_22, HIGH);
+    digitalWrite(P1_0, HIGH);
     
-    // Now go to sleep and wait for watchdog to reset us
-    while (true) {
-        __WFI();
-    }    
+    // Re-enable sensors and I2C pullups for next reading
+    digitalWrite(PIN_ENABLE_SENSORS_3V3, HIGH);
+    digitalWrite(PIN_ENABLE_I2C_PULLUP, HIGH);
+    
+    // Re-initialize I2C
+    Wire1.begin();
+    Wire1.setClock(100000);
+    
+    // Re-initialize the sensor
+    HS300x.begin();
+    ThisThread::sleep_for(10);
 }
 
 // Function to scan flash and find the highest used data index
@@ -436,7 +382,7 @@ void processSerialCommand() {
                         // Send initialization confirmation
                         serial.printf("INITIALIZED\r\n");
                         ThisThread::sleep_for(1000);
-                        blinkDebugPin(5, 100, 100);
+                        digitalWrite(LED_PWR, LOW);
                         NRF_POWER->SYSTEMOFF = 1;
                     } else {
                         serial.printf("INIT_FAILED\r\n");
@@ -456,31 +402,34 @@ void processSerialCommand() {
 
 // Updated setup function to handle watchdog resets
 void setup() {
-    // Configure debug pin
-    nrf_gpio_cfg_output(DEBUG_GPIO_PIN);
+    // Set & Disable LED_BUILTIN
+    pinMode(LED_BUILTIN, OUTPUT);
+    digitalWrite(LED_BUILTIN, LOW);
+
+    // Set LED_PWR
+    pinMode(LED_PWR, OUTPUT);
+    digitalWrite(LED_PWR, HIGH);
+    
+    #ifdef LEDR
+    pinMode(LEDR, OUTPUT);
+    digitalWrite(LEDR, HIGH);
+    #endif
+    
+    #ifdef LEDG
+    pinMode(LEDG, OUTPUT);
+    digitalWrite(LEDG, HIGH);
+    #endif
+    
+    #ifdef LEDB
+    pinMode(LEDB, OUTPUT);
+    digitalWrite(LEDB, HIGH);
+    #endif
 
     // Initialize flash and load configuration
     if (flash.init() != 0) {
-        blinkDebugPin(5, 500, 50);
         currentMode = MODE_IDLE;  // Default to command mode on error
         saveConfig();
         return;
-    }
-
-     // Check if this was a watchdog reset
-    bool isWatchdogReset = (NRF_POWER->RESETREAS & POWER_RESETREAS_DOG_Msk) != 0;
-    
-    // Clear reset reason register
-    NRF_POWER->RESETREAS = NRF_POWER->RESETREAS;
-    
-    // Read the watchdog reset flag to confirm it was planned
-    uint32_t resetFlag = 0;
-    flash.read(&resetFlag, WDT_RESET_FLAG_ADDRESS, sizeof(uint32_t));
-    bool wasPlannedReset = (isWatchdogReset && resetFlag == RESET_FLAG_VALUE);
-    
-    // Clear the reset flag
-    if (resetFlag == RESET_FLAG_VALUE) {
-        flash.erase(WDT_RESET_FLAG_ADDRESS, FLASH_PAGE_SIZE);
     }
     
     // Load configuration
@@ -493,7 +442,7 @@ void setup() {
     if (config.mode == MODE_IDLE && currentIndex == 0) {
         config.mode = MODE_LOGGING;
         saveConfig();
-    } else if (config.mode == MODE_LOGGING && !wasPlannedReset) { // Mode Switch Case: LOGGING to IDLE
+    } else if (config.mode == MODE_LOGGING) { // Mode Switch Case: LOGGING to IDLE
         config.mode = MODE_IDLE;
         saveConfig();
     }
@@ -516,6 +465,12 @@ void setup() {
     // Initialize I2C
     Wire1.begin();
     Wire1.setClock(100000);
+
+    // Configure sensor power pins according to the optimization
+    pinMode(PIN_ENABLE_SENSORS_3V3, OUTPUT);
+    pinMode(PIN_ENABLE_I2C_PULLUP, OUTPUT);
+    digitalWrite(PIN_ENABLE_SENSORS_3V3, HIGH);
+    digitalWrite(PIN_ENABLE_I2C_PULLUP, HIGH);
     
     // Initialize temperature sensor
     HS300x.begin();
@@ -539,9 +494,9 @@ int main() {
     while (true) {
         switch (currentMode) {
             case MODE_LOGGING: {
-                nrf_gpio_pin_set(DEBUG_GPIO_PIN);
+                digitalWrite(LED_PWR, HIGH);
                 float temperature = HS300x.readTemperature();
-                nrf_gpio_pin_clear(DEBUG_GPIO_PIN);
+                digitalWrite(LED_PWR, LOW);
 
                 // Save reading to flash
                 if (!saveTemperatureReading(temperature)) {
