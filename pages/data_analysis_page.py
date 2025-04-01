@@ -403,7 +403,7 @@ def update_dashboard(json_data, column_info, json_metadata):
         df, 
         x=time_col, 
         y=temp_col, 
-        title='Temperature vs Time',
+        title='Time vs Temperature',
         labels={
             time_col: 'Time',
             temp_col: 'Temperature (°C)'
