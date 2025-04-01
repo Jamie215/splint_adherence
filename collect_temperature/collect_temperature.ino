@@ -1,404 +1,479 @@
-#include <Arduino_HS300x.h>
-#include "nrf_nvmc.h"
-#include "nrf_wdt.h"
+#include <Wire.h>
+#include <FlashIAP.h>
 
-// Constants
-#define FLASH_START_ADDRESS 0x60000          // Flash start address for logs
-#define FLASH_PAGE_SIZE 4096                 // Flash page size
-#define FLASH_TOTAL_SIZE 0x80000
-#define MAX_LOG_ENTRIES ((FLASH_TOTAL_SIZE - FLASH_START_ADDRESS) / sizeof(TemperatureLogEntry))
-#define ALIGN_4(addr) ((addr + 3) & ~3)
-#define INITIAL_TIMESTAMP_ADDRESS (FLASH_START_ADDRESS - FLASH_PAGE_SIZE)  // Reserve a safe page for the timestamp
-#define PERSONAL_ID_ADDRESS (INITIAL_TIMESTAMP_ADDRESS - FLASH_PAGE_SIZE)
-#define WAKEUP_INTERVAL_ADDRESS (PERSONAL_ID_ADDRESS - FLASH_PAGE_SIZE)
-#define REQUIRED_WDT_CYCLES_ADDRESS (WAKEUP_INTERVAL_ADDRESS - FLASH_PAGE_SIZE)
-#define GPREGRET_CYCLE_COUNT NRF_POWER->GPREGRET
-#define DEBUG_GPIO_PIN NRF_GPIO_PIN_MAP(1, 9)  // Pin for debugging
+// Include required Arduino libraries
+#include "HS300x.h"  // Temperature/humidity sensor library
 
-// Enums
-enum DeviceMode { LOGGING, RETRIEVAL };
+using namespace mbed;
 
-// Structure
-struct TemperatureLogEntry {
-    uint16_t index;                          // Log index (2 bytes)
-    int16_t temperature;                     // Scaled temperature (2 bytes)
+#define DEFAULT_WAKEUP_INTERVAL 300 // Default 5 minutes (in seconds)
+
+// Flash storage parameters
+#define FLASH_PAGE_SIZE          4096  // 4KB pages on nRF52840
+#define CONFIG_ADDRESS           0x70000
+#define DATA_START_ADDRESS       0x80000
+#define MAX_DATA_ENTRIES         15000
+#define END_DATA_MARKER "END_DATA"
+
+// Simplified operation modes - only these two core states
+enum OperationMode {
+    MODE_IDLE = 0,       // Default mode, waits for commands/initialization
+    MODE_LOGGING = 1,    // Collecting temperature data
 };
 
-// Global Variables
-volatile DeviceMode current_mode = LOGGING;  // Start in logging mode
-uint32_t initial_timestamp = 0;
-uint16_t log_index = 0;
-uint16_t personal_id = 0;
-uint16_t wakeup_interval = 0;
-uint8_t required_wdt_cycles = 1;
+// Data structures
+struct ConfigData {
+    uint32_t initialTimestamp;  // UNIX timestamp for data start
+    uint32_t wakeupInterval;    // Seconds between readings
+    char personalId[16];        // User identifier
+    OperationMode mode;         // Current operation mode
+};
 
-////////////////////////////
-/* Low Power Mode Related */
-////////////////////////////
+struct InitializationData {
+    uint32_t timestamp;
+    uint32_t wakeupInterval;
+    char personalId[16];
+    uint32_t checksum;
+};
 
-// Custom WDT Interrupt Handler
-void Custom_WDT_IRQHandler() {
-    if (NRF_WDT->EVENTS_TIMEOUT) {
-        NRF_WDT->EVENTS_TIMEOUT = 0;         // Clear WDT timeout event
-        
-        loadRequiredWdtCycles();
-        uint8_t wdt_cycle_count = GPREGRET_CYCLE_COUNT;
-        wdt_cycle_count++;
+struct TemperatureData {
+    uint32_t index;
+    float temperature;
+};
 
-        if (wdt_cycle_count >= required_wdt_cycles) {
-            wdt_cycle_count = 0;
-            GPREGRET_CYCLE_COUNT = 0;
+// Configuration data with defaults
+ConfigData config = {
+    0,                       // initialTimestamp - 0 means not initialized
+    DEFAULT_WAKEUP_INTERVAL, // wakeupInterval
+    "DEFAULT_ID",            // personalId
+    MODE_IDLE,               // mode - default to command mode
+};
 
-            nrf_gpio_pin_set(DEBUG_GPIO_PIN);
-        } else {
-            GPREGRET_CYCLE_COUNT = wdt_cycle_count;
-            NRF_WDT->RR[0] = WDT_RR_RR_Reload;
-            enterLowPowerMode();
-        }
+uint32_t currentIndex = 0;
+
+// Current operation mode
+OperationMode currentMode = MODE_IDLE;
+
+// Flash access object
+FlashIAP flash;
+
+// Serial communication constants
+#define SERIAL_BAUD_RATE 9600
+
+// Function to save configuration to flash
+bool saveConfig() {
+    // Erase config page
+    int result = flash.erase(CONFIG_ADDRESS, FLASH_PAGE_SIZE);
+    if (result != 0) {
+        return false;
     }
-}
-
-// Remap the WDT Interrupt Vector Address
-void remapWDTInterrupt() {
-    uint32_t *vectorTable = (uint32_t *)SCB->VTOR;  // Get vector table base address
-    vectorTable[WDT_IRQn + 16] = (uint32_t)Custom_WDT_IRQHandler;  // Remap WDT interrupt
-}
-
-// Configure the WDT
-void configureWDT() {
-    uint16_t wdt_timeout_seconds;
-
-    // Map the wakeup_interval to WDT timeout and required cycles
-    if (wakeup_interval == 300) {  // 5 min
-        wdt_timeout_seconds = 300;
-        required_wdt_cycles = 1;
-    } else if (wakeup_interval == 600) {  // 10 min
-        wdt_timeout_seconds = 300;
-        required_wdt_cycles = 2;
-    } else if (wakeup_interval == 1800) {  // 30 min
-        wdt_timeout_seconds = 450;
-        required_wdt_cycles = 4;
-    } else if (wakeup_interval == 3600) {  // 1 hour
-        wdt_timeout_seconds = 450;
-        required_wdt_cycles = 8;
-    } else {
-        wdt_timeout_seconds = 300;  // Default to 5 min
-        required_wdt_cycles = 1;
-        Serial.println("[WARNING] Invalid wakeup interval. Defaulting to 5 min.");
-    }
-
-    saveRequiredWdtCycles(required_wdt_cycles);
-
-    NRF_WDT->CONFIG = WDT_CONFIG_SLEEP_Run << WDT_CONFIG_SLEEP_Pos;  // Run in all modes
-    NRF_WDT->CRV = (wdt_timeout_seconds * 32768) - 1;                      // WDT timeout in ticks
-    NRF_WDT->RREN |= WDT_RREN_RR0_Msk;                               // Enable reload register
-    NRF_WDT->TASKS_START = 1;                                        // Start the WDT
-
-    // Enable WDT interrupt
-    remapWDTInterrupt();                                             // Remap the interrupt
-    NVIC_ClearPendingIRQ(WDT_IRQn);
-    NVIC_SetPriority(WDT_IRQn, 3);
-    NVIC_EnableIRQ(WDT_IRQn);
-}
-
-// Configure LFCLK
-void configureLFCLK() {
-    NRF_CLOCK->LFCLKSRC = CLOCK_LFCLKSRC_SRC_Xtal;
-    NRF_CLOCK->TASKS_LFCLKSTART = 1;
-    while (!NRF_CLOCK->EVENTS_LFCLKSTARTED);
-    NRF_CLOCK->EVENTS_LFCLKSTARTED = 0;
-}
-
-void enterLowPowerMode() {
-    Serial.println("[INFO] Entering LOW POWER MODE...");
-    nrf_gpio_pin_clear(DEBUG_GPIO_PIN);
-    HS300x.end();
-    Serial.flush();
-
-    NRF_UART0->ENABLE = 0;
-    NRF_SPI0->ENABLE = 0;
-    NRF_TWI0->ENABLE = 0;
-    NRF_CLOCK->TASKS_HFCLKSTOP = 1;
-    NRF_POWER->TASKS_LOWPWR = 1;
-
-    __WFE();
-    __SEV();
-    __WFE();
-}
-
-/////////////////
-/* Log Related */
-/////////////////
-
-void eraseFlashLogs() {
-    // Erase initial timestamp
-    __disable_irq();
-    nrf_nvmc_page_erase(ALIGN_4(INITIAL_TIMESTAMP_ADDRESS));
-    nrf_nvmc_page_erase(ALIGN_4(PERSONAL_ID_ADDRESS));
-    nrf_nvmc_page_erase(ALIGN_4(WAKEUP_INTERVAL_ADDRESS));
-    __enable_irq();
-
-    // Erase log entries
-    for (uint32_t addr = FLASH_START_ADDRESS; addr < FLASH_START_ADDRESS + (MAX_LOG_ENTRIES * sizeof(TemperatureLogEntry)); addr += FLASH_PAGE_SIZE) {
-        __disable_irq();
-        nrf_nvmc_page_erase(addr);
-        __enable_irq();
-    }
-    Serial.println("[INFO] Flash memory erased. Logs cleared.");
-}
-
-bool isFlashFull() {
-    return log_index >= (MAX_LOG_ENTRIES-1);
-}
-
-void writeNewLogEntry() {
-    if (isFlashFull()) {
-        Serial.println("[ERROR] Flash is full. Logging halted.");
-        current_mode = RETRIEVAL;
-        return; // Stop writing
-    }
-
-    recoverLastLogIndex();
-
-    TemperatureLogEntry newEntry = {
-      .index = log_index,
-      .temperature = (int16_t)(HS300x.readTemperature() * 100)
-    };
-
-    uint32_t newAddress = ALIGN_4(FLASH_START_ADDRESS + (log_index * sizeof(TemperatureLogEntry)));
     
-    __disable_irq();
-    nrf_nvmc_write_words(newAddress, (const uint32_t *)&newEntry, sizeof(TemperatureLogEntry) / 4);
-    NRF_WDT->RR[0] = WDT_RR_RR_Reload;  // Reset the watchdog timer to prevent unexpected reset
-    __enable_irq();
-
-    log_index++;
-    Serial.println("[INFO] New log entry recorded.");
-}
-
-void recoverLastLogIndex() {
-  for (uint32_t i=0; i<MAX_LOG_ENTRIES; i++) {
-    uint32_t address = FLASH_START_ADDRESS + (i * sizeof(TemperatureLogEntry));
-    TemperatureLogEntry entry;
-    memcpy(&entry, (const void *)address, sizeof(TemperatureLogEntry));
-    if (entry.index == 0xFFFF) {
-        log_index = i;  // Restore the last valid index
-        break;
-    }
-  }
-}
-
-void retrieveLogs() {
-    // Load the flash-stored objects
-    loadInitialTimestamp();
-    loadPersonalID();
-    loadWakeupInterval();
-
-    // Print header for easier parsing
-    Serial.println("[INFO] Starting data retrieval...");
-    Serial.print("Personal ID:");
-    Serial.println(personal_id);
-    Serial.print("Wake-up Interval (seconds):");
-    Serial.println(wakeup_interval);
-    Serial.print("Initial Timestamp:");
-    Serial.println(initial_timestamp);
-
-    for (uint32_t i = 0; i < MAX_LOG_ENTRIES; i++) {
-        uint32_t address = FLASH_START_ADDRESS + (i * sizeof(TemperatureLogEntry));
-        TemperatureLogEntry entry;
-
-        // Read log entry from flash
-        memcpy(&entry, (const void *)address, sizeof(TemperatureLogEntry));
-
-        // Check if the entry is valid
-        if (entry.index == 0xFFFF || entry.index == 0xFFFFFFFF) {
-            break;
-        }
-
-        Serial.print(entry.index);
-        Serial.print(",");
-        Serial.println(entry.temperature / 100.0);
-    }
-    Serial.println("End of data.");
-}
-
-//////////////////////
-/* DateTime Related */
-//////////////////////
-
-
-void readSerialInput(char* buffer, size_t length) {
-    uint8_t index = 0;
-    while (true) {
-        if (Serial.available()) {
-            char c = Serial.read();
-            if (c == '\n' || index >= length - 1) {
-                buffer[index] = '\0';
-                break;
-            }
-            buffer[index++] = c;
-        }
-    }
-}
-
-void setupLoggingMode() {
-    current_mode = LOGGING;
-    configureLFCLK();
-
-    Serial.println("READY_FOR_DATA");
-    Serial.flush();
-    while (Serial.available()) {
-        Serial.read();  // Clear any residual data
+    // Program config data
+    result = flash.program(&config, CONFIG_ADDRESS, sizeof(ConfigData));
+    delay(100);
+    if (result != 0) {
+        return false;
     }
 
-    char data_buffer[50] = {0};
-    readSerialInput(data_buffer, sizeof(data_buffer));
+    // Verify written data
+    ConfigData verifyConfig;
+    if (flash.read(&verifyConfig, CONFIG_ADDRESS, sizeof(ConfigData)) != 0 ||
+        memcmp(&config, &verifyConfig, sizeof(ConfigData)) != 0) {
+        return false;
+    }
+    
+    return true;
+}
 
-    // Parse the packet: "<epoch_time,personal_id,wakeup_interval>"
-    char epoch_time_str[20], personal_id_str[10], wakeup_interval_str[10];
-    int parsed = sscanf(data_buffer, "<%[^,],%[^,],%[^>]>", epoch_time_str, personal_id_str, wakeup_interval_str);
-    initial_timestamp = strtoul(epoch_time_str, NULL, 10);
-    personal_id = (uint16_t)strtoul(personal_id_str, NULL, 10);
-    wakeup_interval = (uint16_t)strtoul(wakeup_interval_str, NULL, 10);
-
-    if (parsed == 3) {
-        Serial.print("[INFO] Received Epoch Time: ");
-        Serial.println(initial_timestamp);
-        Serial.print("[INFO] Received Personal ID: ");
-        Serial.println(personal_id);
-        Serial.print("[INFO] Received Wake-up Interval: ");
-        Serial.println(wakeup_interval);
-
-        savePersonalID(personal_id);
-        saveWakeupInterval(wakeup_interval);
+// Function to save temperature reading to flash
+bool saveTemperatureReading(float temperature) {
+    uint32_t dataOffset = currentIndex * sizeof(TemperatureData);
+    uint32_t dataAddress = DATA_START_ADDRESS + dataOffset;
+    
+    // Sanity check the address is within valid flash range
+    if (dataAddress < flash.get_flash_start() || 
+        dataAddress + sizeof(TemperatureData) > flash.get_flash_start() + flash.get_flash_size()) {
+        return false;
+    }
+    
+    // Prepare temperature data
+    TemperatureData data;
+    data.index = currentIndex;
+    data.temperature = temperature;
+    
+    // Write to flash with detailed error reporting
+    int writeResult = flash.program(&data, dataAddress, sizeof(TemperatureData));
+    delay(100);
+    if (writeResult != 0) {
+        return false;
+    }
         
-        writeNewLogEntry();
-        configureWDT();
+    // Update data index
+    currentIndex++;
+    
+    return true;
+}
 
-        Serial.println("[INFO] Data received and logging started.");
-        enterLowPowerMode();
-    } else {
-        Serial.println("[ERROR] Failed to parse data packet.");
+// Function to initialize device with parameters from packed data
+bool initializeDevice(const uint8_t* packedData) {
+    InitializationData initData;
+
+    // Copy the packed data into our structure
+    memcpy(&initData, packedData, sizeof(InitializationData));
+
+    // Verify checksum
+    uint32_t calculatedChecksum = 0;
+    const uint8_t* dataPtr = packedData;
+
+    // Sum all bytes except the last 4 bytes (which are the checksum)
+    for (size_t i = 0; i < (sizeof(InitializationData) - sizeof(uint32_t)); ++i) {
+        calculatedChecksum += dataPtr[i];
     }
-}
-
-////////////
-/* Others */
-////////////
-
-void savePersonalID(uint16_t id) {
-  uint32_t aligned_addr = ALIGN_4(PERSONAL_ID_ADDRESS);
-  __disable_irq();
-  nrf_nvmc_write_words(aligned_addr, (uint32_t*)&id, 1);
-  __enable_irq();
-  Serial.println("[INFO] Personal ID saved to flash.");
-}
-
-void saveWakeupInterval(uint16_t interval) {
-  uint32_t aligned_addr = ALIGN_4(WAKEUP_INTERVAL_ADDRESS);
-  __disable_irq();
-  nrf_nvmc_write_words(aligned_addr, (uint32_t*)&interval, 1);
-  __enable_irq();
-  Serial.println("[INFO] Wake-up interval saved to flash.");
-}
-
-// Load personal ID from flash
-void loadInitialTimestamp() {
-    memcpy(&initial_timestamp, (const void*)INITIAL_TIMESTAMP_ADDRESS, sizeof(initial_timestamp));
-    if (initial_timestamp == 0xFFFFFFFF) {
-        Serial.println("[ERROR] No initial timestamp found.");
-        return;
-    } else {
-        Serial.print("[INFO] Loaded initial timestamp: ");
-        Serial.println(initial_timestamp);
+    calculatedChecksum &= 0xFFFFFFFF;
+    
+    if (calculatedChecksum != initData.checksum) {
+        Serial.println("CHECKSUM_ERROR");
+        return false;
     }
-}
 
-// Load personal ID from flash
-void loadPersonalID() {
-    memcpy(&personal_id, (const void*)PERSONAL_ID_ADDRESS, sizeof(personal_id));
-    if (personal_id == 0xFFFF) {
-        Serial.println("[INFO] No personal ID found. Using default.");
-        personal_id = 0;
-    } else {
-        Serial.print("[INFO] Loaded personal ID: ");
-        Serial.println(personal_id);
+    // Calculate how many pages we need to erase based on MAX_DATA_ENTRIES
+    uint32_t totalDataBytes = MAX_DATA_ENTRIES * sizeof(TemperatureData);
+    uint32_t pagesNeeded = (totalDataBytes + FLASH_PAGE_SIZE - 1) / FLASH_PAGE_SIZE; // Ceiling division
+    
+    // Erase all data pages
+    for (uint32_t page = 0; page < pagesNeeded; page++) {
+        uint32_t pageAddress = DATA_START_ADDRESS + (page * FLASH_PAGE_SIZE);
+        int result = flash.erase(pageAddress, FLASH_PAGE_SIZE);
+        if (result != 0) {
+            Serial.print("ERROR: Failed to erase data page at 0x");
+            Serial.println(pageAddress, HEX);
+            return false;
+        }
     }
+
+    // Copy the initialization data to our config
+    config.initialTimestamp = initData.timestamp;
+    config.wakeupInterval = initData.wakeupInterval;
+    
+    // Safely copy personal ID with explicit null termination
+    memset(config.personalId, 0, sizeof(config.personalId));  // Zero out first
+    strncpy(config.personalId, initData.personalId, sizeof(config.personalId) - 1);
+    config.personalId[sizeof(config.personalId) - 1] = '\0';  // Ensure null termination
+    
+    currentIndex = 0;
+    config.mode = MODE_IDLE;
+    
+    return saveConfig();
 }
 
-void loadWakeupInterval() {
-    memcpy(&wakeup_interval, (const void*)WAKEUP_INTERVAL_ADDRESS, sizeof(wakeup_interval));
-    if (wakeup_interval == 0xFFFF) {
-        Serial.println("[INFO] No wake-up interval found. Using default.");
-        wakeup_interval = 60;  // Default to 60 seconds
-    } else {
-        Serial.print("[INFO] Loaded wake-up interval: ");
-        Serial.println(wakeup_interval);
+// Modified enterSleep function that uses delay for timing
+void enterSleep() {
+    // Only enter sleep in logging mode
+    if (currentMode != MODE_LOGGING) return;
+    
+    // Power off sensors
+    HS300x.end();
+    delay(10);
+
+    digitalWrite(PIN_ENABLE_SENSORS_3V3, LOW);
+    digitalWrite(PIN_ENABLE_I2C_PULLUP, LOW);
+    
+    delay(config.wakeupInterval * 1000);
+    
+    // Re-enable sensors and I2C pullups for next reading
+    digitalWrite(PIN_ENABLE_SENSORS_3V3, HIGH);
+    digitalWrite(PIN_ENABLE_I2C_PULLUP, HIGH);
+    delay(100);
+    
+    // Re-initialize the sensor
+    HS300x.begin();
+    delay(10);
+    
+    // Reinitialize serial if needed for debug
+    // initSerial();
+}
+
+// Function to scan flash and find the highest used data index
+uint32_t findHighestDataIndex() {
+    uint32_t highestIndex = 0;
+    TemperatureData data;
+    
+    for (uint32_t i = 0; i < MAX_DATA_ENTRIES; i++) {
+        uint32_t dataAddress = DATA_START_ADDRESS + (i * sizeof(TemperatureData));
+        
+        if (flash.read(&data, dataAddress, sizeof(TemperatureData)) == 0) {
+            // Check if this is valid data (some simple validation)
+            if (data.temperature > -100 && data.temperature < 200) {
+                // Valid temperature range, this slot is likely used
+                if (data.index >= highestIndex) {
+                    highestIndex = data.index + 1;
+                }
+            }
+        } else {
+            break; // Error reading, probably hit unused flash
+        }
     }
+    return highestIndex;
 }
 
-void saveRequiredWdtCycles(uint16_t cycles) {
-    uint32_t aligned_addr = ALIGN_4(REQUIRED_WDT_CYCLES_ADDRESS);
-    __disable_irq();
-    nrf_nvmc_write_words(aligned_addr, (uint32_t*)&cycles, 1);
-    __enable_irq();
-    Serial.println("[INFO] Required WDT cycles saved to flash.");
-}
-
-void loadRequiredWdtCycles() {
-    memcpy(&required_wdt_cycles, (const void*)REQUIRED_WDT_CYCLES_ADDRESS, sizeof(required_wdt_cycles));
-    if (required_wdt_cycles == 0xFFFF) {
-        Serial.println("[INFO] No saved WDT cycles found. Using default.");
-        required_wdt_cycles = 1;
-    } else {
-        Serial.print("[INFO] Loaded required WDT cycles: ");
-        Serial.println(required_wdt_cycles);
+// Function to send data in readable format(CSV)
+void sendReadableData() {
+    // Send metadata first
+    Serial.print("Initial Timestamp,");
+    Serial.println(config.initialTimestamp);
+    
+    Serial.print("Wake-up Interval (Seconds),");
+    Serial.println(config.wakeupInterval);
+    
+    Serial.print("Personal ID,");
+    Serial.println(config.personalId);
+    
+    // Send column headers
+    Serial.println("Timestamp,Temperature");
+    
+    // Read and send data entries
+    TemperatureData data;
+    uint32_t numEntries = findHighestDataIndex();
+    
+    for (uint32_t i = 0; i < numEntries; i++) {
+        uint32_t dataAddress = DATA_START_ADDRESS + i * sizeof(TemperatureData);
+        
+        // Read data from flash
+        if (flash.read(&data, dataAddress, sizeof(TemperatureData)) != 0) {
+            Serial.print("ERROR,");
+            Serial.println(i);
+            continue;
+        }
+        
+        // Calculate timestamp
+        uint32_t timestamp = config.initialTimestamp + (data.index * config.wakeupInterval);
+        
+        // Send data point
+        Serial.print(timestamp);
+        Serial.print(",");
+        Serial.println(data.temperature, 2);
+        delay(5); // Small delay to prevent overrun
     }
+    
+    // Send end marker
+    Serial.print(END_DATA_MARKER);
 }
 
-void setupRetrievalMode() {
-    current_mode = RETRIEVAL;
-    Serial.println("[INFO] Entered retrieval mode.");
+// Function to process incoming serial command
+void processSerialCommand() {
+    if (Serial.available()) {
+        char cmd = Serial.read();
+        
+        switch (cmd) {
+            case '?': // Handshake request
+                Serial.println("Hello World!");
+                break;
+            case '!': // Status request
+                {
+                    if (findHighestDataIndex() > 0) {
+                        Serial.println("HAS_DATA");
+                    } else {
+                        Serial.println("NEED_CONFIGURATION");
+                    }
+                }
+                break;
+            case 'i': // Initialize with binary timestamp
+                {
+                    // Size of the packed initialization data
+                    const size_t dataSize = sizeof(InitializationData);
+                    uint8_t packedData[dataSize];
+
+                    Serial.println("READY_FOR_INIT");
+
+                    unsigned long startTime = millis();
+                    int bytesRead = 0;
+        
+                    while (bytesRead < dataSize) {
+                        if (millis() - startTime > 5000) {
+                            Serial.println("TIMEOUT");
+                            return;
+                        }
+                        
+                        if (Serial.available()) {
+                            packedData[bytesRead++] = (uint8_t)Serial.read();
+                        } else {
+                            delay(10);
+                        }
+                    }
+
+                    // Initialize the device with the packed data
+                    if (initializeDevice(packedData)) {                        
+                        // Send initialization confirmation
+                        Serial.println("INITIALIZED");
+                        delay(1000);
+                        digitalWrite(LED_PWR, LOW);
+                        digitalWrite(LEDR, HIGH);
+                        digitalWrite(LEDG, HIGH);
+                        digitalWrite(LEDB, HIGH);
+                        NRF_POWER->SYSTEMOFF = 1;
+                    } else {
+                        Serial.println("INIT_FAILED");
+                    }
+                }
+                break;
+            case 'r': // Send data in readable format
+                sendReadableData();
+                break;
+            default:
+                // Unknown command
+                Serial.println("UNKNOWN");
+                break;
+        }
+    }
 }
 
 void setup() {
-    nrf_gpio_cfg_output(DEBUG_GPIO_PIN);
+    // Initialize serial for debugging and commands
+    Serial.begin(SERIAL_BAUD_RATE);
+
+    // Set & Disable LED_BUILTIN
+    pinMode(LED_BUILTIN, OUTPUT);
+    digitalWrite(LED_BUILTIN, LOW);
+
+    // Set LED_PWR
+    pinMode(LED_PWR, OUTPUT);
+    digitalWrite(LED_PWR, HIGH);
+
+    // Set & Disable On-board RGB LED
+    #ifdef LEDR
+    pinMode(LEDR, OUTPUT);
+    digitalWrite(LEDR, HIGH);
+    #endif
+    
+    #ifdef LEDG
+    pinMode(LEDG, OUTPUT);
+    digitalWrite(LEDG, HIGH);
+    #endif
+    
+    #ifdef LEDB
+    pinMode(LEDB, OUTPUT);
+    digitalWrite(LEDB, HIGH);
+    #endif
+
+    // Initialize flash and load configuration
+    if (flash.init() != 0) {
+        currentMode = MODE_IDLE;  // Default to command mode on error
+        saveConfig();
+        Serial.println("Flash initialization failed");
+        return;
+    }
+    
+    // Load configuration
+    flash.read(&config, CONFIG_ADDRESS, sizeof(ConfigData));
+    
+    // Find current index for data storage
+    currentIndex = findHighestDataIndex();
+    
+    // Mode Switch Case: IDLE to LOGGING
+    if (config.mode == MODE_IDLE && currentIndex == 0) {
+        config.mode = MODE_LOGGING;
+        saveConfig();
+
+        // Turn off unneeded features 
+        NRF_USBD->ENABLE = 0;
+        NRF_CLOCK->EVENTS_HFCLKSTARTED = 0;
+        NRF_CLOCK->TASKS_HFCLKSTOP = 1;
+
+        // Disable unused analog peripherals
+        NRF_SAADC->ENABLE = 0;
+        NRF_PWM0->ENABLE = 0;
+        NRF_PWM1->ENABLE = 0;
+        NRF_PWM2->ENABLE = 0;
+        NRF_PDM->ENABLE = 0;
+        NRF_I2S->ENABLE = 0;
+        NRF_TWI0->ENABLE = 0;
+
+        // Disable SPI module
+        NRF_SPI0->ENABLE = 0;
+        NRF_SPI1->ENABLE = 0;
+
+        NRF_UART0->TASKS_STOPTX = 1;
+        NRF_UART0->TASKS_STOPRX = 1;
+        NRF_UART0->ENABLE = 0;
+        NRF_UARTE0->TASKS_STOPTX = 1;
+        NRF_UARTE0->TASKS_STOPRX = 1;
+        NRF_UARTE0->ENABLE = 0;
+
+        // Disable radio (BLE)
+        NRF_RADIO->POWER = 0; 
+
+        // Disable other peripherals
+        NRF_QDEC->ENABLE = 0;
+        NRF_COMP->ENABLE = 0;
+
+        NRF_POWER->DCDCEN = 1;
+
+        *(volatile uint32_t *)0x40002FFC = 0;
+        *(volatile uint32_t *)0x40002FFC;
+        *(volatile uint32_t *)0x40002FFC = 1;
+
+        digitalWrite(LEDR, HIGH);
+        digitalWrite(LEDG, HIGH);
+        digitalWrite(LEDB, HIGH);
+    } else if (config.mode == MODE_LOGGING) { // Mode Switch Case: LOGGING to IDLE
+        config.mode = MODE_IDLE;
+        saveConfig();
+
+        NRF_USBD->ENABLE = 1;
+        NRF_UARTE0->ENABLE = 1;
+    }
+    
+    // Set current mode from config
+    currentMode = config.mode;
+
+    // Configure sensor power pins according to the optimization
+    pinMode(PIN_ENABLE_SENSORS_3V3, OUTPUT);
+    pinMode(PIN_ENABLE_I2C_PULLUP, OUTPUT);
+    digitalWrite(PIN_ENABLE_SENSORS_3V3, HIGH);
+    digitalWrite(PIN_ENABLE_I2C_PULLUP, HIGH);
+    
+    // Initialize temperature sensor
     HS300x.begin();
-
-    // Check reset reason
-    uint32_t reset_reason = NRF_POWER->RESETREAS;
-    NRF_POWER->RESETREAS = reset_reason;
-
-    Serial.begin(115200);
-
-    if (reset_reason & POWER_RESETREAS_DOG_Msk) {
-        Serial.println("[INFO] Woke up from WDT.");
-        recoverLastLogIndex();
-        loadWakeupInterval();
-        writeNewLogEntry();
-
-        // Reconfigure LFCLK and WDT for next cycle
-        configureLFCLK();
-        configureWDT();
-        enterLowPowerMode();
-    } else {
-        Serial.println("Enter mode: [l] for logging, or [r] for retrieval");
-        while (true) {
-            if (Serial.available()) {
-                char mode = Serial.read();
-                if (mode == 'l') {
-                    eraseFlashLogs();
-                    setupLoggingMode();
-                    return;
-                } else if (mode == 'r') {
-                    setupRetrievalMode();
-                    retrieveLogs();
-                    return;
-                }
-            }
-        }
+    delay(100);
+    
+    // Handle serial based on mode
+    if (currentMode == MODE_IDLE) {        
+        // Turn on RGB LED to indicate Data Collection has ended
+        digitalWrite(LEDR, HIGH);
+        digitalWrite(LEDG, LOW);
+        digitalWrite(LEDB, HIGH);
+        Serial.println("Ready for Connection");      
+    } 
+    else {
+        Serial.end(); // Close serial to save power in logging mode
     }
 }
 
 void loop() {
+    switch (currentMode) {
+        case MODE_LOGGING: {
+            digitalWrite(LED_PWR, HIGH);
+            float temperature = HS300x.readTemperature();
+            digitalWrite(LED_PWR, LOW);
+
+            // Save reading to flash
+            if (!saveTemperatureReading(temperature)) {
+                // Error saving, switch to idle mode
+                currentMode = MODE_IDLE;
+                config.mode = MODE_IDLE;
+                saveConfig();
+                return;
+            }
+            
+            // Go to sleep
+            enterSleep();
+            break;
+        }
+        case MODE_IDLE:
+        default: {
+            processSerialCommand();
+            delay(100);
+            break;
+        }
+    }
 }

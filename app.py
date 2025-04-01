@@ -32,7 +32,7 @@ app.layout = html.Div([
     dbc.NavbarSimple(
         brand="SPLINT ADHERENCE GUI",
         brand_href="/",
-        color="lightsalmon",
+        color="mediumaquamarine",
         sticky="top",
         dark=True,
         fluid=True,
