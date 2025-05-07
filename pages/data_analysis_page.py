@@ -300,70 +300,6 @@ def aggregate_data(df, unit, time_col, temp_col):
 
     return df_agg
 
-def adjust_overlapping_peaks(peaks, df_agg, time_col, temp_col):
-    """
-    Adjust overlapping peak segments to remove overlap.
-    """
-    adjusted = []
-    i = 0
-    peaks = sorted(peaks, key=lambda x: x['Start'])
-
-    # while i < len(peaks):
-    #     current = peaks[i].copy()
-    #     if i < len(peaks)-1:
-    #         next = peaks[i+1]
-    #         current_start = current['Start']
-    #         current_end = current['End']
-    #         next_start = next['Start']
-    #         next_end = next['End']
-
-    #         if (current['End'] >= next['End']):
-    #             print("first condition", current_start)
-    #             new_current = {}
-    #             new_next = {}
-    #             new_next_next = {}
-
-    #             new_current['Start'] = current_start
-    #             new_current['End'] = next_start - pd.Timedelta(minutes=2, seconds=30)
-    #             new_next['Start'] = next_start + pd.Timedelta(minutes=2, seconds=30)
-    #             new_next['End'] = next_end - pd.Timedelta(minutes=2, seconds=30)
-    #             new_next_next['Start'] = next_end + pd.Timedelta(minutes=2, seconds=30)
-    #             new_next_next['End'] = current_end
-
-    #             new_current['Duration (Min)'] = (new_current['End'] - new_current['Start']).total_seconds() / 60
-    #             new_next['Duration (Min)'] = (new_next['End'] - new_next['Start']).total_seconds() / 60
-    #             new_next_next['Duration (Min)'] = (new_next_next['End'] - new_next_next['Start']).total_seconds() / 60
-
-    #             current_mask = (df_agg[time_col] >= new_current['Start']) & (df_agg[time_col] <= new_current['End'])
-    #             next_mask = (df_agg[time_col] >= new_next['Start']) & (df_agg[time_col] <= new_next['End'])
-    #             next_next_mask = (df_agg[time_col] >= new_next_next['Start']) & (df_agg[time_col] <= new_next_next['End'])
-                
-    #             current_segment = df_agg.loc[current_mask]
-    #             next_segment = df_agg.loc[next_mask]
-    #             next_next_segment = df_agg.loc[next_next_mask]
-                
-    #             new_current['Peak Temperature (°C)'] = current_segment[temp_col].max()
-    #             new_next['Peak Temperature (°C)'] = next_segment[temp_col].max()
-    #             new_next_next['Peak Temperature (°C)'] = next_next_segment[temp_col].max()
-
-    #             adjusted.append(new_current) if new_current['Duration (Min)'] > 0 else None
-    #             adjusted.append(new_next) if new_next['Duration (Min)'] > 0 else None
-    #             adjusted.append(new_next_next) if new_next_next['Duration (Min)'] > 0 else None
-    #             i += 1 # Skip the "next"
-    #         elif (current['End'] == next['Start']):
-    #             print("second condition", current_start)
-    #             current['End'] -= pd.Timedelta(minutes=2, seconds=30)
-    #             adjusted.append(current)
-    #         else:
-    #             if adjusted[-1] != current:
-    #                 adjusted.append(current)
-    #     else:
-    #         if adjusted[-1] != current:
-    #             adjusted.append(current)
-    #     i += 1
-
-    return adjusted
-
 def detect_incomplete_peak_after_last_peak(df_peaks, time_col, temp_col, last_offset_idx,
                                            window_points=3, min_consistency=0.8):
     # Return None if there isn't enough data after last peak
@@ -375,7 +311,7 @@ def detect_incomplete_peak_after_last_peak(df_peaks, time_col, temp_col, last_of
     for i in range(len(post_peak_segment) - window_points+1):
         window = post_peak_segment[temp_col].iloc[i:i+window_points]
 
-        elevated = abs((window - baseline_temp) / baseline_temp) > 0.05
+        elevated = abs((window - baseline_temp) / baseline_temp) > 0.07
         consistency = elevated.sum() / window_points
 
         if consistency >= min_consistency:
@@ -514,16 +450,13 @@ def update_dashboard(json_data, column_info, json_metadata):
         # Initial Peak Detection
         peak_indices, _ = find_peaks(
             df_agg[temp_col],
-            distance=1,
-            prominence=0.7)
+            distance=5,
+            prominence=1)
         
         # Measure each peak's duration
-        results_half = peak_widths(df_agg[temp_col], peak_indices, rel_height=0.5)
+        results_half = peak_widths(df_agg[temp_col], peak_indices, rel_height=0.4)
         left_idx = np.maximum(0, np.round(results_half[2]).astype(int) - 1)
         right_idx = np.round(results_half[3]).astype(int)
-
-        # print("original peak count: ", len(peak_indices))
-        # print(df_agg[time_col].iloc[peak_indices].to_list())
 
         # Validate each peak using the offset temperature as baseline
         validated_peaks = []
@@ -533,9 +466,9 @@ def update_dashboard(json_data, column_info, json_metadata):
             offset_idx = min(len(df_agg)-1, right_idx[i])
 
             baseline_temp = df_agg[temp_col].iloc[offset_idx+1]
-            duration_min = (df_agg[time_col].iloc[offset_idx] - df_agg[time_col].iloc[onset_idx]).total_seconds() / 60
+            duration_min = abs(df_agg[time_col].iloc[offset_idx] - df_agg[time_col].iloc[onset_idx]).total_seconds() / 60
 
-            # if abs((peak_temp-baseline_temp)/baseline_temp) >= 0.05:
+            # if abs((peak_temp-baseline_temp)/baseline_temp) >= 0.07:
             validated_peaks.append({
                 "Start": df_agg[time_col].iloc[onset_idx],
                 "End": df_agg[time_col].iloc[offset_idx],
@@ -546,12 +479,8 @@ def update_dashboard(json_data, column_info, json_metadata):
         # print("validated peak count: ", len(validated_peaks))
         # print(validated_peaks)
         validated_peaks = sorted(validated_peaks, key=lambda x: x['Start'])
-        final_peaks = validated_peaks
-        # final_peaks = adjust_overlapping_peaks(validated_peaks, df_agg, time_col, temp_col)
 
-        # print("final peak count: ", len(final_peaks))
-        # print(final_peaks)
-        for peak in final_peaks:
+        for peak in validated_peaks:
             peak['Start'] = peak['Start'].strftime('%Y-%m-%d %H:%M:%S')
             peak['End'] = peak['End'].strftime('%Y-%m-%d %H:%M:%S')
 
@@ -563,18 +492,18 @@ def update_dashboard(json_data, column_info, json_metadata):
             time_col=time_col,
             temp_col=temp_col,
             last_offset_idx=last_offset_idx,
-            window_points=3,
+            window_points=5,
             min_consistency=0.7
         )
         
         # Append if there is any sustained_event near the end
         if sustained_event:
-            final_peaks.append(sustained_event)
+            validated_peaks.append(sustained_event)
 
-        onset_times = [peak["Start"] for peak in final_peaks]
-        offset_times = [peak["End"] for peak in final_peaks]
+        onset_times = [peak["Start"] for peak in validated_peaks]
+        offset_times = [peak["End"] for peak in validated_peaks]
 
-        peaks_df = pd.DataFrame(final_peaks)
+        peaks_df = pd.DataFrame(validated_peaks)
         peaks_table = html.Div([
             DataTable(
                 data=peaks_df.to_dict('records'),
@@ -593,11 +522,11 @@ def update_dashboard(json_data, column_info, json_metadata):
         )
 
         # Highlight the detected peaks
-        for i in range(len(final_peaks)):
+        for i in range(len(validated_peaks)):
             peak_fig.add_shape(
                 type="rect",
-                x0=final_peaks[i]["Start"],
-                x1=final_peaks[i]["End"],
+                x0=validated_peaks[i]["Start"],
+                x1=validated_peaks[i]["End"],
                 y0=0,
                 y1=1,
                 xref='x',
@@ -716,11 +645,11 @@ def update_dashboard(json_data, column_info, json_metadata):
             margin=dict(t=10)
         )
 
-        avg_temp = np.mean([peak['Peak Temperature (°C)'] for peak in final_peaks])
+        avg_temp = np.mean([peak['Peak Temperature (°C)'] for peak in validated_peaks])
 
         non_peak_mask = np.ones(len(df_agg), dtype=bool)  # Start with all True (non-peak)
 
-        for peak in final_peaks:
+        for peak in validated_peaks:
             start = pd.to_datetime(peak['Start'])
             end = pd.to_datetime(peak['End'])
             mask = (df_agg[time_col] >= start) & (df_agg[time_col] <= end)
