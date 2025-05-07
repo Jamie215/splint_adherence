@@ -59,7 +59,7 @@ data_analysis_layout = html.Div([
     # Aggregation Control (Initially hidden)
     html.Div([
         html.Hr(style={'margin': '20px 0'}),
-        html.H4('Time vs Temperature', style={'color': '#2c3e50'}),
+        html.H4('Time vs Temperature', style={'color': '#2c3e50', 'margin-left': '20px'}),
         dbc.Row([
             dbc.Col(
                 html.Label("Select different time interval for aggregate view:", style={'fontWeight': 'bold'}), width=6),
@@ -300,6 +300,101 @@ def aggregate_data(df, unit, time_col, temp_col):
 
     return df_agg
 
+def adjust_overlapping_peaks(peaks, df_agg, time_col, temp_col):
+    """
+    Adjust overlapping peak segments to remove overlap.
+    """
+    adjusted = []
+    i = 0
+    peaks = sorted(peaks, key=lambda x: x['Start'])
+
+    # while i < len(peaks):
+    #     current = peaks[i].copy()
+    #     if i < len(peaks)-1:
+    #         next = peaks[i+1]
+    #         current_start = current['Start']
+    #         current_end = current['End']
+    #         next_start = next['Start']
+    #         next_end = next['End']
+
+    #         if (current['End'] >= next['End']):
+    #             print("first condition", current_start)
+    #             new_current = {}
+    #             new_next = {}
+    #             new_next_next = {}
+
+    #             new_current['Start'] = current_start
+    #             new_current['End'] = next_start - pd.Timedelta(minutes=2, seconds=30)
+    #             new_next['Start'] = next_start + pd.Timedelta(minutes=2, seconds=30)
+    #             new_next['End'] = next_end - pd.Timedelta(minutes=2, seconds=30)
+    #             new_next_next['Start'] = next_end + pd.Timedelta(minutes=2, seconds=30)
+    #             new_next_next['End'] = current_end
+
+    #             new_current['Duration (Min)'] = (new_current['End'] - new_current['Start']).total_seconds() / 60
+    #             new_next['Duration (Min)'] = (new_next['End'] - new_next['Start']).total_seconds() / 60
+    #             new_next_next['Duration (Min)'] = (new_next_next['End'] - new_next_next['Start']).total_seconds() / 60
+
+    #             current_mask = (df_agg[time_col] >= new_current['Start']) & (df_agg[time_col] <= new_current['End'])
+    #             next_mask = (df_agg[time_col] >= new_next['Start']) & (df_agg[time_col] <= new_next['End'])
+    #             next_next_mask = (df_agg[time_col] >= new_next_next['Start']) & (df_agg[time_col] <= new_next_next['End'])
+                
+    #             current_segment = df_agg.loc[current_mask]
+    #             next_segment = df_agg.loc[next_mask]
+    #             next_next_segment = df_agg.loc[next_next_mask]
+                
+    #             new_current['Peak Temperature (°C)'] = current_segment[temp_col].max()
+    #             new_next['Peak Temperature (°C)'] = next_segment[temp_col].max()
+    #             new_next_next['Peak Temperature (°C)'] = next_next_segment[temp_col].max()
+
+    #             adjusted.append(new_current) if new_current['Duration (Min)'] > 0 else None
+    #             adjusted.append(new_next) if new_next['Duration (Min)'] > 0 else None
+    #             adjusted.append(new_next_next) if new_next_next['Duration (Min)'] > 0 else None
+    #             i += 1 # Skip the "next"
+    #         elif (current['End'] == next['Start']):
+    #             print("second condition", current_start)
+    #             current['End'] -= pd.Timedelta(minutes=2, seconds=30)
+    #             adjusted.append(current)
+    #         else:
+    #             if adjusted[-1] != current:
+    #                 adjusted.append(current)
+    #     else:
+    #         if adjusted[-1] != current:
+    #             adjusted.append(current)
+    #     i += 1
+
+    return adjusted
+
+def detect_incomplete_peak_after_last_peak(df_peaks, time_col, temp_col, last_offset_idx,
+                                           window_points=3, min_consistency=0.8):
+    # Return None if there isn't enough data after last peak
+    if last_offset_idx >= len(df_peaks) - window_points: return None
+
+    baseline_temp = df_peaks[temp_col].iloc[last_offset_idx+1]
+    post_peak_segment = df_peaks.iloc[last_offset_idx+1:]
+
+    for i in range(len(post_peak_segment) - window_points+1):
+        window = post_peak_segment[temp_col].iloc[i:i+window_points]
+
+        elevated = abs((window - baseline_temp) / baseline_temp) > 0.05
+        consistency = elevated.sum() / window_points
+
+        if consistency >= min_consistency:
+            start_idx = post_peak_segment.index[i]-1
+            sustained_segment = df_peaks.loc[start_idx:]
+
+            start_ts = df_peaks.loc[start_idx, time_col]
+            end_ts = sustained_segment[time_col].iloc[-1]
+            duration = (end_ts - start_ts).total_seconds() / 60
+            max_temp = sustained_segment[temp_col].max()
+
+            return {
+                "Start": start_ts.strftime('%Y-%m-%d %H:%M:%S'),
+                "End": end_ts.strftime('%Y-%m-%d %H:%M:%S'),
+                "Duration (Min)": duration,
+                "Peak Temperature (°C)": max_temp
+            }
+    return None
+
 def prepare_gantt(onset_times, offset_times):
     split_rows = []
 
@@ -331,7 +426,9 @@ def prepare_gantt(onset_times, offset_times):
             split_rows.append({
                 'Date': str(this_date),
                 'StartHour': start_hr,
-                'EndHour': end_hr
+                'EndHour': end_hr,
+                'Start': onset_times[i],
+                'End': offset_times[i]
             })
 
             current += pd.Timedelta(days=1)
@@ -410,36 +507,74 @@ def update_dashboard(json_data, column_info, json_metadata):
     
     # Peak detection
     peaks_table = None
-    highlight_points = None
     peak_fig = None
     try:
-        df_peaks = aggregate_data(df.copy(), '5min', time_col, temp_col)
+        df_agg = aggregate_data(df.copy(), '5min', time_col, temp_col)
+
+        # Initial Peak Detection
         peak_indices, _ = find_peaks(
-            df_peaks[temp_col],
-            distance=2,
+            df_agg[temp_col],
+            distance=1,
             prominence=0.7)
         
-        results_half = peak_widths(df_peaks[temp_col], peak_indices, rel_height=0.5)
-
-        left_idx = np.round(results_half[2]).astype(int)
+        # Measure each peak's duration
+        results_half = peak_widths(df_agg[temp_col], peak_indices, rel_height=0.5)
+        left_idx = np.maximum(0, np.round(results_half[2]).astype(int) - 1)
         right_idx = np.round(results_half[3]).astype(int)
 
-        onset_times = pd.to_datetime(df_peaks.iloc[left_idx][time_col].values)
-        offset_times = pd.to_datetime(df_peaks.iloc[right_idx][time_col].values)
-        duration = offset_times - onset_times
+        # print("original peak count: ", len(peak_indices))
+        # print(df_agg[time_col].iloc[peak_indices].to_list())
 
-        peak_data = []
+        # Validate each peak using the offset temperature as baseline
+        validated_peaks = []
         for i, peak_idx in enumerate(peak_indices):
-            peak_temp = df_peaks.iloc[peak_idx][temp_col]
+            peak_temp = df_agg[temp_col].iloc[peak_idx]
+            onset_idx = max(0, left_idx[i])
+            offset_idx = min(len(df_agg)-1, right_idx[i])
 
-            peak_data.append({
-                "Start": onset_times[i].strftime('%Y-%m-%d %H:%M'),
-                "End": offset_times[i].strftime('%Y-%m-%d %H:%M'),
-                "Duration (Min)": duration[i].total_seconds() / 60,
-                "Peak Temperature (°C)": round(peak_temp, 2)
+            baseline_temp = df_agg[temp_col].iloc[offset_idx+1]
+            duration_min = (df_agg[time_col].iloc[offset_idx] - df_agg[time_col].iloc[onset_idx]).total_seconds() / 60
+
+            # if abs((peak_temp-baseline_temp)/baseline_temp) >= 0.05:
+            validated_peaks.append({
+                "Start": df_agg[time_col].iloc[onset_idx],
+                "End": df_agg[time_col].iloc[offset_idx],
+                "Duration (Min)": duration_min,
+                "Peak Temperature (°C)": peak_temp
             })
 
-        peaks_df = pd.DataFrame(peak_data)
+        # print("validated peak count: ", len(validated_peaks))
+        # print(validated_peaks)
+        validated_peaks = sorted(validated_peaks, key=lambda x: x['Start'])
+        final_peaks = validated_peaks
+        # final_peaks = adjust_overlapping_peaks(validated_peaks, df_agg, time_col, temp_col)
+
+        # print("final peak count: ", len(final_peaks))
+        # print(final_peaks)
+        for peak in final_peaks:
+            peak['Start'] = peak['Start'].strftime('%Y-%m-%d %H:%M:%S')
+            peak['End'] = peak['End'].strftime('%Y-%m-%d %H:%M:%S')
+
+        # Find trailing peak near the end of data collection
+        last_offset_idx = right_idx[-1]
+        
+        sustained_event = detect_incomplete_peak_after_last_peak(
+            df_peaks=df_agg,
+            time_col=time_col,
+            temp_col=temp_col,
+            last_offset_idx=last_offset_idx,
+            window_points=3,
+            min_consistency=0.7
+        )
+        
+        # Append if there is any sustained_event near the end
+        if sustained_event:
+            final_peaks.append(sustained_event)
+
+        onset_times = [peak["Start"] for peak in final_peaks]
+        offset_times = [peak["End"] for peak in final_peaks]
+
+        peaks_df = pd.DataFrame(final_peaks)
         peaks_table = html.Div([
             DataTable(
                 data=peaks_df.to_dict('records'),
@@ -450,27 +585,19 @@ def update_dashboard(json_data, column_info, json_metadata):
             )
         ])
 
-        highlight_points = {
-            'x': df_peaks.iloc[peak_indices][time_col],
-            'y': df_peaks.iloc[peak_indices][temp_col]
-        }
-
         peak_fig = px.line(
-            df_peaks,
+            df_agg,
             x=time_col,
             y=temp_col,
             labels={time_col: 'Time', temp_col: 'Temperature (°C)'}
         )
 
-        peak_fig.add_scatter(x=highlight_points['x'], y=highlight_points['y'],
-                             mode='markers', name='Peaks',
-                             marker=dict(size=10, color='red', symbol='circle'))
-
-        for i in range(len(onset_times)):
+        # Highlight the detected peaks
+        for i in range(len(final_peaks)):
             peak_fig.add_shape(
                 type="rect",
-                x0=str(onset_times[i]),
-                x1=str(offset_times[i]),
+                x0=final_peaks[i]["Start"],
+                x1=final_peaks[i]["End"],
                 y0=0,
                 y1=1,
                 xref='x',
@@ -480,106 +607,166 @@ def update_dashboard(json_data, column_info, json_metadata):
                 layer="below",
                 line_width=0,
             )
-        
+
         peak_fig.update_layout(
             xaxis_title='Time',
             yaxis_title='Temperature (°C)',
             hovermode='closest',
+            hoverlabel=dict(
+                font=dict(color='white')
+            ),
             plot_bgcolor='rgba(240, 240, 240, 0.5)',
             paper_bgcolor='rgba(0, 0, 0, 0)',
             font=dict(color='#2c3e50'),
             margin=dict(t=10)
         )
 
-    except Exception as e:
-        peaks_table = html.Div([
-            html.H4("Peak Detection Failed", style={'color': 'red'}),
-            html.P(str(e))
-        ])
+        # Gantt Chart
+        gantt_df = prepare_gantt(onset_times, offset_times)
+        gantt_fig = go.Figure()
 
-    gantt_df = prepare_gantt(onset_times, offset_times)
-    gantt_fig = go.Figure()
-
-    for idx, row in gantt_df.iterrows():
+        for idx, row in gantt_df.iterrows():
+            gantt_fig.add_trace(go.Scatter(
+                x=[row['Date'], row['Date']],
+                y=[row['StartHour'], row['EndHour']],
+                mode='lines',
+                hovertemplate=(
+                    f"Start: {row['Start']}<br>"
+                    f"End: {row['End']}<extra></extra>"
+                ),
+                line=dict(color='mediumseagreen', width=10),
+                showlegend=False
+            ))
+        
+        #  For padding on the left
         gantt_fig.add_trace(go.Scatter(
-            x=[row['StartHour'], row['EndHour']],
-            y=[row['Date'], row['Date']],
-            mode='lines',
-            line=dict(color='green', width=10),
+            x=[gantt_df['Date'].min()],
+            y=[0],  # Arbitrary y within visible range
+            mode='markers',
+            marker=dict(opacity=0),
             showlegend=False
         ))
 
-    gantt_fig.update_layout(
-        xaxis_title="Hour of Day",
-        yaxis_title="Date",
-        xaxis=dict(range=[0, 24], tick0=0, dtick=1),
-        yaxis=dict(type='category'),  # To show date labels nicely
-        plot_bgcolor='rgba(240, 240, 240, 0.5)',
-        paper_bgcolor='rgba(0, 0, 0, 0)',
-        font=dict(color='#2c3e50'),
-        margin=dict(t=10)
-    )
+        #  For padding on the right
+        gantt_fig.add_trace(go.Scatter(
+            x=[gantt_df['Date'].max()],
+            y=[0],  # Same here
+            mode='markers',
+            marker=dict(opacity=0),
+            showlegend=False
+        ))
 
-    daily_summary = prepare_occurance_summary(onset_times, offset_times)
-    summary_fig = go.Figure()
+        gantt_fig.update_layout(
+            xaxis=dict(
+                title='Date',
+                type='category',
+            ),
+            yaxis=dict(
+                title='Hour of Day (24H)',
+                range=[23, 0],
+                dtick=1
+            ),
+            hoverlabel=dict(
+                font=dict(color='white')
+            ),
+            plot_bgcolor='rgba(240, 240, 240, 0.5)',
+            paper_bgcolor='rgba(0, 0, 0, 0)',
+            font=dict(color='#2c3e50'),
+            margin=dict(t=10),
+            height=600
+        )
 
-    summary_fig.add_trace(go.Scatter(
-        x=daily_summary['Date'],
-        y=daily_summary['TotalDurationMin'],
-        mode='lines+markers',
-        name='Total Duration (min)',
-        line=dict(color='green')
-    ))
+        gantt_fig.add_shape(
+            type="rect",
+            xref="paper",  # spans entire x-axis
+            yref="y",
+            x0=0,
+            x1=1,
+            y0=12,
+            y1=23,
+            fillcolor="rgba(200, 200, 200, 0.3)",  # adjust color/opacity as needed
+            layer="below",
+            line_width=0
+        )
 
-    summary_fig.update_layout(
-        xaxis_title="Date",
-        yaxis=dict(
-            title="Daily Total Duration (min)"
-        ),
-        legend=dict(x=0, y=1.15, orientation="h"),
-        plot_bgcolor='rgba(240,240,240,0.5)',
-        paper_bgcolor='rgba(0,0,0,0)',
-        font=dict(color='#2c3e50'),
-        margin=dict(t=10)
-    )
+        # Daily Summary
+        daily_summary = prepare_occurance_summary(onset_times, offset_times)
+        summary_fig = go.Figure()
 
-    avg_temp = df[temp_col].mean()
-    min_temp = df[temp_col].min()
-    max_temp = df[temp_col].max()
+        summary_fig.add_trace(go.Bar(
+            x=daily_summary['Date'],
+            y=daily_summary['TotalDurationMin'],
+            name='Total Duration (min)',
+            marker=dict(color='mediumseagreen')
+        ))
 
-    stats_info = html.Div([
-        html.Div([html.Strong('Average Temperature: '), html.Span(f"{avg_temp:.2f}°C")]),
-        html.Div([html.Strong('Minimum Temperature: '), html.Span(f"{min_temp:.2f}°C")]),
-        html.Div([html.Strong('Maximum Temperature: '), html.Span(f"{max_temp:.2f}°C")]),
-        html.Div([html.Strong('Total Duration Minutes: '), html.Span((f"{np.sum(daily_summary['TotalDurationMin']):.1f} Minutes"))]),
-        html.Div([html.Strong('Average Total Duration Minutes Per Day: '), html.Span((f"{np.mean(daily_summary['TotalDurationMin']):.1f} Minutes"))])
-    ], style={'marginTop':'10px', 'marginBottom':'10px'})
-    
-    return html.Div([
-        html.Hr(style={'margin': '20px 0'}),
-        html.H4('Occurance Detection', style={'marginTop': '30px'}),
-        dcc.Graph(
-            id='peak-graph',
-            figure=peak_fig,
-            config={'displayModeBar': True},
-            style={'height': '450px'}
-        ) if peak_fig else html.Div(),
-        peaks_table,
-        html.H4('Splint-Wearing Summary', style={'marginTop': '30px'}),
-        stats_info,
-        dcc.Graph(
-            id='summary-chart',
-            figure=summary_fig,
-            config={'displayModeBar': True},
-        ) if summary_fig else html.Div(),
-        # stats_info,
-        html.H4('Splint Wearing Periods by Hour of Day', style={'marginTop': '30px'}),
-        dcc.Graph(
-            id='gantt-chart',
-            figure=gantt_fig,
-            config={'displayModeBar': True},
-        ) if gantt_fig else html.Div()
-    ]), {'display': 'block'},{'display': 'block'}
+        summary_fig.update_layout(
+            xaxis_title="Date",
+            yaxis=dict(
+                title="Daily Total Duration (min)"
+            ),
+            xaxis=dict(type='category'),
+            legend=dict(x=0, y=1.15, orientation="h"),
+            hoverlabel=dict(
+                font=dict(color='white')
+            ),
+            plot_bgcolor='rgba(240,240,240,0.5)',
+            paper_bgcolor='rgba(0,0,0,0)',
+            font=dict(color='#2c3e50'),
+            margin=dict(t=10)
+        )
+
+        avg_temp = np.mean([peak['Peak Temperature (°C)'] for peak in final_peaks])
+
+        non_peak_mask = np.ones(len(df_agg), dtype=bool)  # Start with all True (non-peak)
+
+        for peak in final_peaks:
+            start = pd.to_datetime(peak['Start'])
+            end = pd.to_datetime(peak['End'])
+            mask = (df_agg[time_col] >= start) & (df_agg[time_col] <= end)
+            non_peak_mask &= ~mask  # Exclude peak times
+
+        # Apply the mask to get non-peak temperature readings
+        non_peak_temps = df_agg.loc[non_peak_mask, temp_col]
+        avg_non_peak_temp = non_peak_temps.mean()
+        
+        stats_info = html.Div([
+            html.Div([html.Strong('Average Non-peak Temperature: '), html.Span(f"{avg_non_peak_temp:.2f}°C")]),
+            html.Div([html.Strong('Average Peak Temperature: '), html.Span(f"{avg_temp:.2f}°C")]),
+            html.Div([html.Strong('Total Duration Minutes: '), html.Span((f"{np.sum(daily_summary['TotalDurationMin']):.1f} Minutes"))]),
+            html.Div([html.Strong('Average Total Duration Minutes Per Day: '), html.Span((f"{np.mean(daily_summary['TotalDurationMin']):.1f} Minutes"))])
+        ], style={'marginTop':'10px', 'marginBottom':'10px'})
+
+        return html.Div([
+            html.Hr(style={'margin': '20px 0'}),
+            html.H4('Occurance Detection', style={'marginTop': '30px'}),
+            dcc.Graph(
+                id='peak-graph',
+                figure=peak_fig,
+                config={'displayModeBar': True},
+                style={'height': '450px'}
+            ) if peak_fig else html.Div(),
+            peaks_table,
+            html.H4('Splint-Wearing Summary', style={'marginTop': '30px'}),
+            stats_info,
+            dcc.Graph(
+                id='summary-chart',
+                figure=summary_fig,
+                config={'displayModeBar': True},
+            ) if summary_fig else html.Div(),
+            # stats_info,
+            html.H4('Splint Wearing Periods by Hour of Day', style={'marginTop': '30px'}),
+            dcc.Graph(
+                id='gantt-chart',
+                figure=gantt_fig,
+                config={'displayModeBar': True},
+            ) if gantt_fig else html.Div()
+        ]), {'display': 'block'},{'display': 'block'}
+    except Exception as e:
+        return html.Div([
+            html.H4("Peak Detection Failed", style={'color': 'red'}),
+            html.P(str(e))
+        ]),{'display': 'none'},{'display': 'none'}
 
 # Callback #3 - Update aggregated graph based on user input
 @app.callback(
