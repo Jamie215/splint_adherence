@@ -465,7 +465,7 @@ def update_dashboard(json_data, column_info, json_metadata):
             onset_idx = max(0, left_idx[i])
             offset_idx = min(len(df_agg)-1, right_idx[i])
 
-            baseline_temp = df_agg[temp_col].iloc[offset_idx+1]
+            # baseline_temp = df_agg[temp_col].iloc[offset_idx+1]
             duration_min = abs(df_agg[time_col].iloc[offset_idx] - df_agg[time_col].iloc[onset_idx]).total_seconds() / 60
 
             # if abs((peak_temp-baseline_temp)/baseline_temp) >= 0.07:
@@ -476,8 +476,6 @@ def update_dashboard(json_data, column_info, json_metadata):
                 "Peak Temperature (°C)": peak_temp
             })
 
-        # print("validated peak count: ", len(validated_peaks))
-        # print(validated_peaks)
         validated_peaks = sorted(validated_peaks, key=lambda x: x['Start'])
 
         for peak in validated_peaks:

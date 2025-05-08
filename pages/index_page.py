@@ -426,10 +426,6 @@ def register_index_callbacks():
 
         ctx = callback_context
 
-        USER_FILES_DIR = os.getcwd()
-        DOWNLOAD_DIR = os.path.join(USER_FILES_DIR, "Downloaded Data")
-        os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-
         # Check if the download button was clicked.
         if ctx.triggered and ctx.triggered[0]['prop_id'].endswith('.n_clicks'):
             if not filename or filename.strip() == "":
@@ -437,8 +433,7 @@ def register_index_callbacks():
                 return (None, {"bordercolor": "red", "boxShadow": "0 0 0 0.25rem rgb(255 0 0 / 25%)"}, file_status, False)
 
             filename = f"{filename}.csv"
-            file_path = os.path.join(DOWNLOAD_DIR, filename)
-            file_content = arduino.download_file(file_path)
+            file_content = arduino.download_file(filename)
 
             # Update the file download status
             file_status = html.Div("Download Complete", style={"color": "mediumseagreen"})

@@ -189,13 +189,13 @@ def initialize_arduino(epoch_time: int, personal_id: Union[int, str] = "", wakeu
         # Always disconnect after initialization
         disconnect_arduino()
 
-def download_file(file_path: str) -> Dict[str, Any]:
+def download_file(filename: str) -> Dict[str, Any]:
     """
     Download data from the Arduino and save it to a file.
     Preserves the original CSV format with metadata at the top.
     
     Args:
-        file_path: Path to save the data
+        filename: name of the file
         
     Returns:
         A dictionary with the data for the Dash download component.
@@ -264,22 +264,13 @@ def download_file(file_path: str) -> Dict[str, Any]:
                 # Keep only the incomplete line in the buffer
                 data_buffer = last_line
         
-        # Once all data is processed, write to file
-        with open(file_path, 'w', newline='') as f:
-            f.write(output_buffer.getvalue())
-            
-        # Read the processed file
-        with open(file_path, 'r') as f:
-            csv_content = f.read()
-        
-        f.close()
+        csv_content = output_buffer.getvalue()
 
         return {
             'content': csv_content,
-            'filename': os.path.basename(file_path),
+            'filename': filename,
             'type': 'text/csv'
         }
-                
     except Exception as e:
         print(f"Error downloading file: {e}")
         raise Exception(f"Failed to download data: {str(e)}")
