@@ -9,7 +9,7 @@ import dash_bootstrap_components as dbc
 from dash.dash_table import DataTable
 import plotly.express as px
 import plotly.graph_objects as go
-from scipy.signal import find_peaks, peak_widths
+from scipy.signal import find_peaks, peak_widths, peak_prominences
 import numpy as np
 
 from app_instance import app
@@ -450,25 +450,32 @@ def update_dashboard(json_data, column_info, json_metadata):
         # Initial Peak Detection
         peak_indices, _ = find_peaks(
             df_agg[temp_col],
-            distance=5,
+            distance=2,
             prominence=1)
         
+        # Compute prominences
+        prominences, _, _ = peak_prominences(df_agg[temp_col], peak_indices)
+
+        print("promiences: ", prominences)
+        print("mean prominence: ", np.mean(prominences))
+        print("median promience: ", np.median(prominences))
+
         # Measure each peak's duration
-        results_half = peak_widths(df_agg[temp_col], peak_indices, rel_height=0.4)
+        results_half = peak_widths(df_agg[temp_col], peak_indices, rel_height=0.5)
         left_idx = np.maximum(0, np.round(results_half[2]).astype(int) - 1)
         right_idx = np.round(results_half[3]).astype(int)
+        median_prominence = np.median(prominences)
 
-        # Validate each peak using the offset temperature as baseline
+        # Validate significant peaks
         validated_peaks = []
         for i, peak_idx in enumerate(peak_indices):
+            if prominences[i] < median_prominence: continue
+
             peak_temp = df_agg[temp_col].iloc[peak_idx]
             onset_idx = max(0, left_idx[i])
             offset_idx = min(len(df_agg)-1, right_idx[i])
-
-            # baseline_temp = df_agg[temp_col].iloc[offset_idx+1]
             duration_min = abs(df_agg[time_col].iloc[offset_idx] - df_agg[time_col].iloc[onset_idx]).total_seconds() / 60
 
-            # if abs((peak_temp-baseline_temp)/baseline_temp) >= 0.07:
             validated_peaks.append({
                 "Start": df_agg[time_col].iloc[onset_idx],
                 "End": df_agg[time_col].iloc[offset_idx],
