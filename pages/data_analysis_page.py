@@ -9,7 +9,8 @@ import dash_bootstrap_components as dbc
 from dash.dash_table import DataTable
 import plotly.express as px
 import plotly.graph_objects as go
-from scipy.signal import find_peaks, peak_widths, peak_prominences
+from scipy import sparse
+from scipy.sparse.linalg import spsolve
 import numpy as np
 
 from app_instance import app
@@ -281,7 +282,7 @@ def update_file_information(contents, filename):
 
 def aggregate_data(df, unit, time_col, temp_col):
     """
-    Aggregates temperature data over time.
+    Aggregates temperature data over time; when aggregated, use temperature mean
 
     Args:
         df (DataFrame): Original data
@@ -300,36 +301,107 @@ def aggregate_data(df, unit, time_col, temp_col):
 
     return df_agg
 
-def detect_incomplete_peak_after_last_peak(df_peaks, time_col, temp_col, last_offset_idx,
-                                           window_points=3, min_consistency=0.8):
-    # Return None if there isn't enough data after last peak
-    if last_offset_idx >= len(df_peaks) - window_points: return None
+def baseline_asls(y, lam=1e6, p=0.4, niter=20):
+    """
+    Asymmetric least squares smoothing for baseline estimation
+    y: input signal
+    lam: smoothing penalty parameter
+    p: noise level
+    niter: number of iterations
 
-    baseline_temp = df_peaks[temp_col].iloc[last_offset_idx+1]
-    post_peak_segment = df_peaks.iloc[last_offset_idx+1:]
+    Returns the estimated baseline
+    """
+    n = len(y)
+    D = sparse.diags([1, -2, 1], [0, 1, 2], shape=(n-2, n))
+    w = np.ones(n)
+    for _ in range(niter):
+        W = sparse.spdiags(w, 0, n, n)
+        Z = W + lam * (D.T @ D)
+        z = spsolve(Z, w * y)
+        w = p * (y > z) + (1-p) * (y < z)
 
-    for i in range(len(post_peak_segment) - window_points+1):
-        window = post_peak_segment[temp_col].iloc[i:i+window_points]
+    return z
 
-        elevated = abs((window - baseline_temp) / baseline_temp) > 0.07
-        consistency = elevated.sum() / window_points
+def detect_onsets_offsets(temp_series, time_series, min_samples=2):
+    """
+    Find onsets and offsets of peaks by tracking the baseline and using dual threshold
+    """    
+    # Compute baseline
+    baseline = baseline_asls(temp_series)
+    delta = temp_series - baseline
 
-        if consistency >= min_consistency:
-            start_idx = post_peak_segment.index[i]-1
-            sustained_segment = df_peaks.loc[start_idx:]
+    events = []
+    in_event = False
+    onset = None
+    consec = 0
+    threshold = 3
 
-            start_ts = df_peaks.loc[start_idx, time_col]
-            end_ts = sustained_segment[time_col].iloc[-1]
-            duration = (end_ts - start_ts).total_seconds() / 60
-            max_temp = sustained_segment[temp_col].max()
+    for idx, dT in enumerate(delta):
+        if not in_event:
+            # Register as onset if deltaT is higher than high_gate
+            if dT >= threshold:
+                onset = max(0, idx-1)
+                in_event = True
 
-            return {
-                "Start": start_ts.strftime('%Y-%m-%d %H:%M:%S'),
-                "End": end_ts.strftime('%Y-%m-%d %H:%M:%S'),
-                "Duration (Min)": duration,
-                "Peak Temperature (°C)": max_temp
-            }
-    return None
+        else:
+            # Register as offset if already in event and deltaT is lower than low_gate
+            if dT <= threshold:
+                consec += 1
+                threshold = dT # dT decreases as the offset occurs
+                # Register offset if the decrease in dT was not a noise or it was a significant drop
+                if consec >= min_samples or dT < 1.5:
+                    # Temperature cooling takes longer; go back 5 data points to find when the peak happened
+                    prev_idx = max(0, idx-5)
+                    if prev_idx > 0:
+                        max_idx = np.argmax(delta[prev_idx:idx]) + prev_idx
+                        if (delta[max_idx] - delta[max_idx+1]) > 1:
+                            offset = min(max_idx+1, idx)
+                        else:
+                            offset = min(max_idx+2, idx)
+                    else:
+                        offset = idx # Fall back value
+                    if offset > onset:
+                        events.append((onset, offset))
+                    
+                    in_event = False
+                    consec = 0
+                    threshold = 3
+            # For rapid cooling, register offset immediately
+            elif idx > 0 and dT-delta[idx-1] > threshold:
+                offset = idx
+                if offset > onset:
+                    events.append((onset, offset))
+                in_event = False
+                consec = 0
+                threshold = 3
+            else:
+                consec = 0
+
+    # Handle open event at the end of the record
+    if in_event:
+        events.append((onset, len(temp_series)-1))
+
+    out = pd.DataFrame(events, columns=['StartIdx', 'EndIdx'])
+    out['Onset'] = time_series.iloc[out['StartIdx']].values
+    out['Offset'] = time_series.iloc[out['EndIdx']].values
+    out['DurationMin'] = (out['Offset'] - out['Onset']).dt.total_seconds()/60
+    return baseline, delta, out
+    
+def extract_peaks(temp_series, time_series, events_df):
+    """
+    Returns a DaraFrame composed of PeakTime, PeakTemp
+    """
+    rows = []
+    for _, event in events_df.iterrows():
+        seg = temp_series.iloc[event.StartIdx:(event.EndIdx+1)]
+        rel_idx = int(np.argmax(seg))
+        rows.append({
+            "EventID": event.EventID,
+            "PeakTemp": seg.iloc[rel_idx],
+            "PeakTime": time_series.loc[event.StartIdx + rel_idx]
+        })
+
+    return pd.DataFrame(rows)
 
 def prepare_gantt(onset_times, offset_times):
     split_rows = []
@@ -425,13 +497,8 @@ def update_dashboard(json_data, column_info, json_metadata):
             html.P("Could not identify time and temperature columns.")
         ]), {'display': 'none'}, {'display': 'none'}, {'display': 'none'}
 
-    metadata = {}
-    if json_metadata:
-        try:
-            metadata = json.loads(json_metadata)
-        except:
-            pass
     try:
+        # Convert time_col and temp_col datatype
         df[time_col] = pd.to_datetime(df[time_col], errors='coerce')
         df[temp_col] = pd.to_numeric(df[temp_col], errors='coerce')
         df = df.dropna(subset=[time_col, temp_col])
@@ -446,101 +513,54 @@ def update_dashboard(json_data, column_info, json_metadata):
     peak_fig = None
     try:
         df_agg = aggregate_data(df.copy(), '5min', time_col, temp_col)
+        # Find onsets and offsets event and their peaks
+        baseline, delta, events_df = detect_onsets_offsets(df_agg[temp_col], df_agg[time_col])
+        print("after detect_onsets_offsets")
+        events_df = events_df.reset_index(drop=True)
+        events_df['EventID'] = events_df.index
+        peaks_df = extract_peaks(df_agg[temp_col], df_agg[time_col], events_df)
 
-        # Initial Peak Detection
-        peak_indices, _ = find_peaks(
-            df_agg[temp_col],
-            distance=2,
-            prominence=1)
-        
-        # Compute prominences
-        prominences, _, _ = peak_prominences(df_agg[temp_col], peak_indices)
-
-        print("promiences: ", prominences)
-        print("mean prominence: ", np.mean(prominences))
-        print("median promience: ", np.median(prominences))
-
-        # Measure each peak's duration
-        results_half = peak_widths(df_agg[temp_col], peak_indices, rel_height=0.5)
-        left_idx = np.maximum(0, np.round(results_half[2]).astype(int) - 1)
-        right_idx = np.round(results_half[3]).astype(int)
-        median_prominence = np.median(prominences)
-
-        # Validate significant peaks
-        validated_peaks = []
-        for i, peak_idx in enumerate(peak_indices):
-            if prominences[i] < median_prominence: continue
-
-            peak_temp = df_agg[temp_col].iloc[peak_idx]
-            onset_idx = max(0, left_idx[i])
-            offset_idx = min(len(df_agg)-1, right_idx[i])
-            duration_min = abs(df_agg[time_col].iloc[offset_idx] - df_agg[time_col].iloc[onset_idx]).total_seconds() / 60
-
-            validated_peaks.append({
-                "Start": df_agg[time_col].iloc[onset_idx],
-                "End": df_agg[time_col].iloc[offset_idx],
-                "Duration (Min)": duration_min,
-                "Peak Temperature (°C)": peak_temp
-            })
-
-        validated_peaks = sorted(validated_peaks, key=lambda x: x['Start'])
-
-        for peak in validated_peaks:
-            peak['Start'] = peak['Start'].strftime('%Y-%m-%d %H:%M:%S')
-            peak['End'] = peak['End'].strftime('%Y-%m-%d %H:%M:%S')
-
-        # Find trailing peak near the end of data collection
-        last_offset_idx = right_idx[-1]
-        
-        sustained_event = detect_incomplete_peak_after_last_peak(
-            df_peaks=df_agg,
-            time_col=time_col,
-            temp_col=temp_col,
-            last_offset_idx=last_offset_idx,
-            window_points=5,
-            min_consistency=0.7
+        # Merge events_df and peaks_df
+        peak_events_df = (
+            events_df.merge(peaks_df[["EventID", "PeakTemp", "PeakTime"]], on="EventID")
+                    .sort_values("Onset")
         )
-        
-        # Append if there is any sustained_event near the end
-        if sustained_event:
-            validated_peaks.append(sustained_event)
 
-        onset_times = [peak["Start"] for peak in validated_peaks]
-        offset_times = [peak["End"] for peak in validated_peaks]
+        peak_events_df = (
+            peak_events_df[["Onset", "Offset", "DurationMin", "PeakTemp", ]]
+                    .rename(columns={
+                        "Onset": "Start",
+                        "Offset": "End",
+                        "DurationMin": "Duration (Min)",
+                        "PeakTemp": "Peak Temperature (°C)"
+                    })
+        )
+        # DEBUG
+        print(peak_events_df)
 
-        peaks_df = pd.DataFrame(validated_peaks)
-        peaks_table = html.Div([
-            DataTable(
-                data=peaks_df.to_dict('records'),
-                columns=[{"name": i, "id": i} for i in peaks_df.columns],
-                style_table={'overflowX': 'auto'},
-                style_cell={'textAlign': 'left', 'padding': '5px'},
-                style_header={'backgroundColor': '#f4f4f4', 'fontWeight': 'bold'}
-            )
-        ])
-
+        # Plot peaks figure, where the detected peaks are highlighted
         peak_fig = px.line(
             df_agg,
             x=time_col,
             y=temp_col,
             labels={time_col: 'Time', temp_col: 'Temperature (°C)'}
         )
-
-        # Highlight the detected peaks
-        for i in range(len(validated_peaks)):
-            peak_fig.add_shape(
-                type="rect",
-                x0=validated_peaks[i]["Start"],
-                x1=validated_peaks[i]["End"],
-                y0=0,
-                y1=1,
-                xref='x',
-                yref='paper',
-                fillcolor="LightGreen",
-                opacity=0.3,
-                layer="below",
-                line_width=0,
-            )
+        peak_fig.add_trace(go.Scatter(
+            x=df_agg[time_col],
+            y=baseline,
+            name="AsLS baseline",
+            line=dict(color='red', width=1)
+        ))
+        peak_fig.add_trace(go.Scatter(
+            x=df_agg[time_col],
+            y=delta,
+            name="Delta",
+            line=dict(color='black', width=1)
+        ))
+        for _, row in peak_events_df.iterrows():
+            peak_fig.add_vrect(x0=row['Start'], x1=row['End'],
+                              fillcolor="LightGreen", opacity=0.3,
+                              layer="below", line_width=0)
 
         peak_fig.update_layout(
             xaxis_title='Time',
@@ -555,8 +575,18 @@ def update_dashboard(json_data, column_info, json_metadata):
             margin=dict(t=10)
         )
 
+        peaks_table = html.Div([
+            DataTable(
+                data=peak_events_df.to_dict('records'),
+                columns=[{"name": i, "id": i} for i in peak_events_df.columns],
+                style_table={'overflowX': 'auto'},
+                style_cell={'textAlign': 'left', 'padding': '5px'},
+                style_header={'backgroundColor': '#f4f4f4', 'fontWeight': 'bold'}
+            )
+        ])
+
         # Gantt Chart
-        gantt_df = prepare_gantt(onset_times, offset_times)
+        gantt_df = prepare_gantt(peak_events_df["Start"], peak_events_df["End"])
         gantt_fig = go.Figure()
 
         for idx, row in gantt_df.iterrows():
@@ -624,7 +654,7 @@ def update_dashboard(json_data, column_info, json_metadata):
         )
 
         # Daily Summary
-        daily_summary = prepare_occurance_summary(onset_times, offset_times)
+        daily_summary = prepare_occurance_summary(peak_events_df["Start"], peak_events_df["End"])
         summary_fig = go.Figure()
 
         summary_fig.add_trace(go.Bar(
@@ -650,30 +680,27 @@ def update_dashboard(json_data, column_info, json_metadata):
             margin=dict(t=10)
         )
 
-        avg_temp = np.mean([peak['Peak Temperature (°C)'] for peak in validated_peaks])
+        avg_peak_temp = peaks_df['PeakTemp'].mean()
 
-        non_peak_mask = np.ones(len(df_agg), dtype=bool)  # Start with all True (non-peak)
-
-        for peak in validated_peaks:
-            start = pd.to_datetime(peak['Start'])
-            end = pd.to_datetime(peak['End'])
-            mask = (df_agg[time_col] >= start) & (df_agg[time_col] <= end)
-            non_peak_mask &= ~mask  # Exclude peak times
+        non_peak_series = pd.Series(True, index=df_agg.index)
+        for _, row in peak_events_df.iterrows():
+            in_peak = df_agg[time_col].between(row['Start'], row['End'])
+            non_peak_series &= ~in_peak
 
         # Apply the mask to get non-peak temperature readings
-        non_peak_temps = df_agg.loc[non_peak_mask, temp_col]
+        non_peak_temps = df_agg.loc[non_peak_series, temp_col]
         avg_non_peak_temp = non_peak_temps.mean()
         
         stats_info = html.Div([
             html.Div([html.Strong('Average Non-peak Temperature: '), html.Span(f"{avg_non_peak_temp:.2f}°C")]),
-            html.Div([html.Strong('Average Peak Temperature: '), html.Span(f"{avg_temp:.2f}°C")]),
+            html.Div([html.Strong('Average Peak Temperature: '), html.Span(f"{avg_peak_temp:.2f}°C")]),
             html.Div([html.Strong('Total Duration Minutes: '), html.Span((f"{np.sum(daily_summary['TotalDurationMin']):.1f} Minutes"))]),
             html.Div([html.Strong('Average Total Duration Minutes Per Day: '), html.Span((f"{np.mean(daily_summary['TotalDurationMin']):.1f} Minutes"))])
         ], style={'marginTop':'10px', 'marginBottom':'10px'})
 
         return html.Div([
             html.Hr(style={'margin': '20px 0'}),
-            html.H4('Occurance Detection', style={'marginTop': '30px'}),
+            html.H4('Estimated Occurance Detection', style={'marginTop': '30px'}),
             dcc.Graph(
                 id='peak-graph',
                 figure=peak_fig,
@@ -681,7 +708,7 @@ def update_dashboard(json_data, column_info, json_metadata):
                 style={'height': '450px'}
             ) if peak_fig else html.Div(),
             peaks_table,
-            html.H4('Splint-Wearing Summary', style={'marginTop': '30px'}),
+            html.H4('Estimated Splint-Wearing Summary', style={'marginTop': '30px'}),
             stats_info,
             dcc.Graph(
                 id='summary-chart',
