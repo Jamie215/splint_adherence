@@ -407,7 +407,10 @@ void setup() {
         saveConfig();
 
         NRF_USBD->ENABLE = 1;
-        NRF_UARTE0->ENABLE = 1;
+        NRF_CLOCK->TASKS_HFCLKSTART = 1;
+
+        NRF_UART0->ENABLE = 1;
+        NRF_UARTE1->ENABLE = 1;
     }
     
     // Set current mode from config
@@ -423,7 +426,7 @@ void setup() {
         digitalWrite(LEDR, HIGH);
         digitalWrite(LEDG, LOW);
         digitalWrite(LEDB, HIGH);
-        Serial.println("Ready for Connection");      
+        Serial.println("Ready for Connection");
     } 
     else {
         Serial.end(); // Close serial to save power in logging mode
