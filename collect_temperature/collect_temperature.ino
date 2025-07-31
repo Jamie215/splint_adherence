@@ -174,23 +174,12 @@ void enterSleep() {
     // Power off sensors
     HS300x.end();
     delay(10);
-
-    digitalWrite(PIN_ENABLE_SENSORS_3V3, LOW);
-    digitalWrite(PIN_ENABLE_I2C_PULLUP, LOW);
     
     delay(config.wakeupInterval * 1000);
-    
-    // Re-enable sensors and I2C pullups for next reading
-    digitalWrite(PIN_ENABLE_SENSORS_3V3, HIGH);
-    digitalWrite(PIN_ENABLE_I2C_PULLUP, HIGH);
-    delay(100);
     
     // Re-initialize the sensor
     HS300x.begin();
     delay(10);
-    
-    // Reinitialize serial if needed for debug
-    // initSerial();
 }
 
 // Function to scan flash and find the highest used data index
@@ -376,7 +365,6 @@ void setup() {
 
         // Turn off unneeded features 
         NRF_USBD->ENABLE = 0;
-        NRF_CLOCK->EVENTS_HFCLKSTARTED = 0;
         NRF_CLOCK->TASKS_HFCLKSTOP = 1;
 
         // Disable unused analog peripherals
@@ -386,7 +374,6 @@ void setup() {
         NRF_PWM2->ENABLE = 0;
         NRF_PDM->ENABLE = 0;
         NRF_I2S->ENABLE = 0;
-        NRF_TWI0->ENABLE = 0;
 
         // Disable SPI module
         NRF_SPI0->ENABLE = 0;
@@ -395,9 +382,9 @@ void setup() {
         NRF_UART0->TASKS_STOPTX = 1;
         NRF_UART0->TASKS_STOPRX = 1;
         NRF_UART0->ENABLE = 0;
-        NRF_UARTE0->TASKS_STOPTX = 1;
-        NRF_UARTE0->TASKS_STOPRX = 1;
-        NRF_UARTE0->ENABLE = 0;
+        NRF_UARTE1->TASKS_STOPTX = 1;
+        NRF_UARTE1->TASKS_STOPRX = 1;
+        NRF_UARTE1->ENABLE = 0;
 
         // Disable radio (BLE)
         NRF_RADIO->POWER = 0; 
@@ -425,12 +412,6 @@ void setup() {
     
     // Set current mode from config
     currentMode = config.mode;
-
-    // Configure sensor power pins according to the optimization
-    pinMode(PIN_ENABLE_SENSORS_3V3, OUTPUT);
-    pinMode(PIN_ENABLE_I2C_PULLUP, OUTPUT);
-    digitalWrite(PIN_ENABLE_SENSORS_3V3, HIGH);
-    digitalWrite(PIN_ENABLE_I2C_PULLUP, HIGH);
     
     // Initialize temperature sensor
     HS300x.begin();
