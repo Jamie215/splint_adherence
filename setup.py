@@ -24,7 +24,7 @@ executables = [
 
 setup(
     name="Splint_Adherence",
-    version="1.0.0",
+    version="1.1.0",
     description="Splint Adherence Measurement Application",
     options={"build_exe": build_exe_options},
     executables=executables

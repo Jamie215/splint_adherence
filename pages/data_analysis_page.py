@@ -325,7 +325,7 @@ def baseline_asls(y, lam=1e6, p=0.4, niter=20):
 def detect_onsets_offsets(temp_series, time_series, min_samples=2):
     """
     Find onsets and offsets of peaks by tracking the baseline and using dual threshold
-    """    
+    """
     # Compute baseline
     baseline = baseline_asls(temp_series)
     delta = temp_series - baseline
@@ -348,8 +348,8 @@ def detect_onsets_offsets(temp_series, time_series, min_samples=2):
             if dT <= threshold:
                 consec += 1
                 threshold = dT # dT decreases as the offset occurs
-                # Register offset if the decrease in dT was not a noise or it was a significant drop
-                if consec >= min_samples or dT < 1.5:
+                # Register offset if the decrease in dT was not a noise
+                if consec >= min_samples:
                     # Temperature cooling takes longer; go back 5 data points to find when the peak happened
                     prev_idx = max(0, idx-5)
                     if prev_idx > 0:
@@ -366,16 +366,16 @@ def detect_onsets_offsets(temp_series, time_series, min_samples=2):
                     in_event = False
                     consec = 0
                     threshold = 3
-            # For rapid cooling, register offset immediately
-            elif idx > 0 and dT-delta[idx-1] > threshold:
-                offset = idx
-                if offset > onset:
-                    events.append((onset, offset))
-                in_event = False
-                consec = 0
-                threshold = 3
-            else:
-                consec = 0
+                # For rapid cooling, register offset immediately
+                elif idx > 0 and dT-delta[idx-1] > threshold:
+                    offset = idx
+                    if offset > onset:
+                        events.append((onset, offset))
+                    in_event = False
+                    consec = 0
+                    threshold = 3
+                else:
+                    consec = 0
 
     # Handle open event at the end of the record
     if in_event:
