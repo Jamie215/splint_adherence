@@ -21,12 +21,10 @@ def parse_file(contents):
         # Find where the data table starts (line with headers)
         data_start = None
         for i, line in enumerate(lines):
-            line_lower = line.lower()
-            # Look for a line that has both timestamp and temperature
-            if ('timestamp' in line_lower and 'temperature' in line_lower):
+            if ('Temperature' in line):
                 data_start = i
                 break
-        
+            
         # Extract metadata
         metadata = {}
         for i in range(data_start):
@@ -43,12 +41,7 @@ def parse_file(contents):
         return df, metadata, None
         
     except Exception as e:
-        # If our custom parsing fails, try standard CSV
-        try:
-            df = pd.read_csv(io.StringIO(decoded.decode('utf-8')))
-            return df, {}, None
-        except:
-            return None, {}, f"Could not parse file: {str(e)}"
+        return None, {}, f"Could not parse file: {str(e)}"
 
 def baseline_asls(y, lam=1e6, p=0.4, niter=20):
     """

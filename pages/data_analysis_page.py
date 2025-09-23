@@ -132,22 +132,56 @@ def update_dashboard(json_data):
         df = pd.read_json(json_data, orient='split')
         df['Timestamp'] = pd.to_datetime(df['Timestamp'])
         df['Temperature'] = pd.to_numeric(df['Temperature'])
+        df['Red'] = pd.to_numeric(df['Red'])
+        df['Green'] = pd.to_numeric(df['Green'])
+        df['Blue'] = pd.to_numeric(df['Blue'])
         df = df.reset_index(drop=True)
         
         time_col = df["Timestamp"]
         temp_col = df["Temperature"]
+
     except Exception as e:
         return [html.Div([
             html.H4('Error', style={'color': 'red'}),
             html.P(str(e))
         ])]
-
+    
     # Peak detection
     peaks_table = None
     peak_fig = None
     try:
         # Find onsets and offsets event and their peaks
         baseline, delta, events_df = analysis_helper.detect_onsets_offsets(time_col, temp_col)
+        print("events_df: ", events_df)
+
+        # No peak detected
+        if events_df.empty:
+            # No events detected - create basic plots without peak annotations
+            colour_fig = go.Figure()
+            colour_fig.add_trace(go.Scatter(x=df['Timestamp'], y=df['Red'], name='Red', line=dict(color='red')))
+            colour_fig.add_trace(go.Scatter(x=df['Timestamp'], y=df['Green'], name='Green', line=dict(color='green')))
+            colour_fig.add_trace(go.Scatter(x=df['Timestamp'], y=df['Blue'], name='Blue', line=dict(color='blue')))
+            colour_fig.update_layout(xaxis_title='Time', yaxis_title='Color Value', title='RGB Values Over Time')
+            
+            # Temperature plot
+            peak_fig = px.line(df, x="Timestamp", y="Temperature", labels={"Timestamp": 'Time', "Temperature": 'Temperature (°C)'})            
+            # Create simple stats
+            avg_temp = temp_col.mean()
+            stats_info = html.Div([
+                html.Div([html.Strong('Average Temperature: '), html.Span(f"{avg_temp:.2f}°C")]),
+                html.Div([html.Strong('No temperature peaks detected in this dataset')])
+            ], style={'marginTop':'10px', 'marginBottom':'10px'})
+            
+            return [html.Div([
+                html.Hr(style={'margin': '20px 0'}),
+                html.H4('Data Analysis', style={'marginTop': '30px'}),
+                dcc.Graph(id='colour-graph', figure=colour_fig, config={'displayModeBar': True}, style={'height': '450px'}),
+                dcc.Graph(id='peak-graph', figure=peak_fig, config={'displayModeBar': True}, style={'height': '450px'}),
+                html.H4('Summary', style={'marginTop': '30px'}),
+                stats_info,
+                html.P('No significant temperature events were detected in this dataset.')
+            ])]
+        
         events_df = events_df.reset_index(drop=True)
         events_df['EventID'] = events_df.index
         peaks_df = analysis_helper.extract_peaks(time_col, temp_col, events_df)
@@ -169,6 +203,36 @@ def update_dashboard(json_data):
         )
         print("peak_events_df: ", peak_events_df)
 
+        # Plot RGB value fluctuations
+        colour_fig = go.Figure()
+
+        colour_fig.add_trace(go.Scatter(
+            x=df['Timestamp'],
+            y=df['Red'],
+            name='Red',
+            line=dict(color='red')
+        ))
+
+        colour_fig.add_trace(go.Scatter(
+            x=df['Timestamp'],
+            y=df['Green'],
+            name='Green',
+            line=dict(color='green')
+        ))
+
+        colour_fig.add_trace(go.Scatter(
+            x=df['Timestamp'],
+            y=df['Blue'],
+            name='Blue',
+            line=dict(color='blue')
+        ))
+
+        colour_fig.update_layout(
+            xaxis_title='Time',
+            yaxis_title='Color Value',
+            title='RGB Values Over Time'
+        )
+        
         # Plot peaks figure, where the detected peaks are highlighted
         peak_fig = px.line(
             df,
@@ -219,7 +283,6 @@ def update_dashboard(json_data):
         gantt_df = analysis_helper.prepare_gantt(peak_events_df["Start"], peak_events_df["End"])
         gantt_fig = go.Figure()
 
-        print("building gantt")
         for _, row in gantt_df.iterrows():
             gantt_fig.add_trace(go.Scatter(
                 x=[row['Date'], row['Date']],
@@ -283,7 +346,6 @@ def update_dashboard(json_data):
             layer="below",
             line_width=0
         )
-        print("done with gantt")
 
         # Daily Summary
         daily_summary = analysis_helper.prepare_occurance_summary(peak_events_df["Start"], peak_events_df["End"])
@@ -332,6 +394,12 @@ def update_dashboard(json_data):
         return [html.Div([
             html.Hr(style={'margin': '20px 0'}),
             html.H4('Estimated Occurance Detection', style={'marginTop': '30px'}),
+            dcc.Graph(
+                id='colour-graph',
+                figure=colour_fig,
+                config={'displayModeBar': True},
+                style={'height': '450px'}
+            ),
             dcc.Graph(
                 id='peak-graph',
                 figure=peak_fig,
