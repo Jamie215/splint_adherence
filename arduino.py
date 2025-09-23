@@ -311,10 +311,10 @@ def process_buffer_data(data: bytearray, output: io.StringIO, in_metadata: bool)
         
         # Process the line according to state
         if in_metadata:
-            if line_str.startswith("Timestamp,Temperature"):
+            if line_str.startswith("Timestamp,Temperature,Red,Green,Blue"):
                 # Found header line, switch to data mode
                 in_metadata = False
-                output.write("Timestamp,Temperature\r\n")
+                output.write("Timestamp,Temperature,Red,Green,Blue\r\n")
             elif line_str.startswith("Initial Timestamp,"):
                 # Process timestamp in metadata
                 parts = line_str.split(',', 1)
@@ -333,7 +333,8 @@ def process_buffer_data(data: bytearray, output: io.StringIO, in_metadata: bool)
                 output.write(f"{line_str}\r\n")
         else:
             # Data section
-            parts = line_str.split(',', 1)
+            parts = line_str.split(',')
+            print("parts: ", parts)
             if len(parts) == 2 and parts[0].strip().isdigit():
                 # It's a data line with timestamp
                 try:
@@ -341,13 +342,13 @@ def process_buffer_data(data: bytearray, output: io.StringIO, in_metadata: bool)
                     iso_time = datetime.datetime.fromtimestamp(
                         epoch_time, tz=datetime.timezone.utc
                     ).strftime('%Y-%m-%d %H:%M:%S')
-                    output.write(f"{iso_time},{parts[1]}\r\n")
+                    output.write(f"{iso_time},{parts[1]},{parts[2]},{parts[3]}\r\n")
                 except (ValueError, OverflowError) as e:
                     # Handle invalid timestamps
                     print(f"Warning: Invalid timestamp {parts[0]}: {e}")
                     output.write(f"{line_str}\r\n")
             else:
-                # Non-data line in data section (unusual but possible)
+                # Non-data line in data section
                 output.write(f"{line_str}\r\n")
     
     return in_metadata

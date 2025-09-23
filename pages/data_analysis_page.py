@@ -1,5 +1,3 @@
-import base64
-import io
 import pandas as pd
 import json
 
@@ -9,11 +7,11 @@ import dash_bootstrap_components as dbc
 from dash.dash_table import DataTable
 import plotly.express as px
 import plotly.graph_objects as go
-from scipy import sparse
-from scipy.sparse.linalg import spsolve
+
 import numpy as np
 
 from app_instance import app
+import pages.analysis_helper as analysis_helper
 
 # Define app layout with styling
 data_analysis_layout = html.Div([
@@ -53,38 +51,11 @@ data_analysis_layout = html.Div([
     }),
     
     # Add hidden storage components
-    dcc.Store(id='intermediate-value'),
+    dcc.Store(id='df-value'),
     dcc.Store(id='metadata-value'),
-    dcc.Store(id='column-info'),
-
-    # Aggregation Control (Initially hidden)
-    html.Div([
-        html.Hr(style={'margin': '20px 0'}),
-        html.H4('Time vs Temperature', style={'color': '#2c3e50', 'margin-left': '20px'}),
-        dbc.Row([
-            dbc.Col(
-                html.Label("Select different time interval for aggregate view:", style={'fontWeight': 'bold'}), width=6),
-            dbc.Col(
-                dcc.Dropdown(
-                    id='aggregation-interval',
-                    options=[
-                        {'label': '5 Min', 'value': '5min'},
-                        {'label': '1 Hour', 'value': '1H'},
-                        {'label': '1 Day', 'value': '1D'}
-                    ],
-                    value='5min',
-                    clearable=False,
-                    style={'width': '150px'}
-            ), width=6)
-        ], style={'align-items': 'center'})], id='aggregation-control', style={'display': 'none'}),
-
-    # Aggregated Graph (Initially hidden)
-    html.Div([
-        dcc.Graph(id='temperature-graph', style={'height': '450px'})
-    ], id='aggregation-graph-container', style={'display': 'none'}),
 
     # Statistics and Graph Container
-    html.Div(id='output-data-upload', style={
+    html.Div(id='output-data', style={
         'padding': '20px',
         'backgroundColor': 'ghostwhite', 
         'borderRadius': '5px'
@@ -95,169 +66,37 @@ data_analysis_layout = html.Div([
         'fontFamily': 'Arial, sans-serif'
     })
 
-def parse_custom_csv(contents):
-    """
-    Parser specifically designed for files with metadata section followed by data table.
-    """
-    # Decode the file contents
-    content_type, content_string = contents.split(',')
-    decoded = base64.b64decode(content_string)
-    
-    try:
-        # Read file as text
-        file_content = decoded.decode('utf-8')
-        lines = file_content.strip().split('\n')
-        
-        # Find where the data table starts (line with headers)
-        data_start = None
-        for i, line in enumerate(lines):
-            line_lower = line.lower()
-            # Look for a line that has both timestamp and temperature
-            if ('timestamp' in line_lower or 'time' in line_lower) and \
-               ('temperature' in line_lower or 'temp' in line_lower):
-                data_start = i
-                break
-        
-        # If we can't find a clear data section, try just looking for timestamp
-        if data_start is None:
-            for i, line in enumerate(lines):
-                if 'timestamp' in line.lower():
-                    data_start = i
-                    break
-        
-        # If still no header row found, assume traditional CSV
-        if data_start is None:
-            df = pd.read_csv(io.StringIO(file_content))
-            return df, {}, None
-        
-        # Extract metadata
-        metadata = {}
-        for i in range(data_start):
-            parts = lines[i].split(',', 1)  # Split at first comma only
-            if len(parts) >= 2:
-                key = parts[0].strip()
-                value = parts[1].strip()
-                metadata[key] = value
-        
-        # Parse data section
-        data_content = '\n'.join(lines[data_start:])
-        df = pd.read_csv(io.StringIO(data_content))
-        
-        return df, metadata, None
-        
-    except Exception as e:
-        # If our custom parsing fails, try standard CSV
-        try:
-            df = pd.read_csv(io.StringIO(decoded.decode('utf-8')))
-            return df, {}, None
-        except:
-            return None, {}, f"Could not parse file: {str(e)}"
-        
-def parse_file(contents, filename):
-    """Parse uploaded file contents into a pandas DataFrame"""
-    if filename.lower().endswith('.csv'):
-        return parse_custom_csv(contents)
-    
-    # For other file types, use the standard approach
-    content_type, content_string = contents.split(',')
-    decoded = base64.b64decode(content_string)
-    
-    try:
-        if 'xls' in filename.lower():
-            df = pd.read_excel(io.BytesIO(decoded))
-            return df, {}, None
-        else:
-            return None, {}, "Unsupported file type. Please upload a CSV or Excel file."
-    
-    except Exception as e:
-        return None, {}, f"Error processing file: {str(e)}"
-
-def guess_time_column(df):
-    """Try to automatically identify the time/date column"""
-    # Check for columns with time-related names first
-    time_keywords = ['time', 'date', 'timestamp', 'datetime']
-    for col in df.columns:
-        col_lower = str(col).lower()
-        if any(keyword in col_lower for keyword in time_keywords):
-            try:
-                pd.to_datetime(df[col], errors='coerce')
-                return col
-            except:
-                pass
-    
-    # Try all columns to see if they can be converted to datetime
-    for col in df.columns:
-        try:
-            pd.to_datetime(df[col], errors='coerce')
-            return col
-        except:
-            continue
-    
-    # Fallback to first column
-    return df.columns[0] if len(df.columns) > 0 else None
-
-def guess_temperature_column(df, time_col):
-    """Try to automatically identify the temperature column"""
-    # Check for columns with temperature-related names
-    temp_keywords = ['temp', 'temperature', 'celsius', 'fahrenheit']
-    for col in df.columns:
-        col_lower = str(col).lower()
-        if col != time_col and any(keyword in col_lower for keyword in temp_keywords):
-            if pd.api.types.is_numeric_dtype(df[col]) or pd.to_numeric(df[col], errors='coerce').notna().all():
-                return col
-    
-    # Try to find any numeric column that's not the time column
-    for col in df.columns:
-        if col != time_col:
-            try:
-                if pd.api.types.is_numeric_dtype(df[col]) or pd.to_numeric(df[col], errors='coerce').notna().all():
-                    return col
-            except:
-                continue
-    
-    # Fallback to second column or first non-time column
-    for col in df.columns:
-        if col != time_col:
-            return col
-    
-    return df.columns[0]  # Last resort
-
 # Callback #1 - Process file upload
 @app.callback(
     [Output('file-info', 'children'),
      Output('file-info', 'style'),
-     Output('intermediate-value', 'data'),
-     Output('metadata-value', 'data'),
-     Output('column-info', 'data')],
+     Output('df-value', 'data'),
+     Output('metadata-value', 'data')],
     [Input('upload-data', 'contents')],
     [State('upload-data', 'filename')]
 )
 def update_file_information(contents, filename):
     if contents is None:
-        return (html.Div(), 
-                {'display': 'none'}, 
-                None, None, None)
+        return (html.Div(),
+                {'display': 'none'},
+                None, None)
     
-    df, metadata, error = parse_file(contents, filename)
+    df, metadata, error = analysis_helper.parse_file(contents)
     if error:
         return (html.Div([
                     html.H4('Error', style={'color': 'red'}),
                     html.P(error)
-                ]), 
-                {'display': 'block', 'padding': '20px', 'backgroundColor': 'ghostwhite', 
+                ]),
+                {'display': 'block', 'padding': '20px', 'backgroundColor': 'ghostwhite',
                  'borderRadius': '5px', 'marginBottom': '20px'},
-                None, None, None)
-    
-    # Try to guess time and temperature columns
-    time_col = guess_time_column(df)
-    temp_col = guess_temperature_column(df, time_col)
+                None, None)
     
     # Create file info display
     file_info = html.Div([
         html.H4('File Information', style={'marginBottom': '15px', 'color': '#2c3e50'}),
         html.Div([
             html.Div([
-                html.Strong('Uploaded File: '), 
+                html.Strong('Uploaded File: '),
                 html.Span(filename)
             ], style={'marginBottom': '5px'}),
         ])
@@ -268,257 +107,50 @@ def update_file_information(contents, filename):
         metadata_rows = []
         for key, value in metadata.items():
             metadata_rows.append(html.Div([
-                html.Strong(f"{key}: "), 
+                html.Strong(f"{key}: "),
                 html.Span(value)
             ], style={'marginBottom': '5px'}))
         file_info.children.append(html.Div(metadata_rows))
     
-    return (file_info, 
-            {'display': 'block', 'padding': '20px', 'backgroundColor': 'ghostwhite', 
+    return (file_info,
+            {'display': 'block', 'padding': '20px', 'backgroundColor': 'ghostwhite',
              'borderRadius': '5px', 'marginBottom': '20px'},
             df.to_json(date_format='iso', orient='split'),
-            json.dumps(metadata),
-            json.dumps({'time_col': time_col, 'temp_col': temp_col, 'filename': filename}))
+            json.dumps(metadata))
 
-def aggregate_data(df, unit, time_col, temp_col):
-    """
-    Aggregates temperature data over time; when aggregated, use temperature mean
-
-    Args:
-        df (DataFrame): Original data
-        unit (str): Aggregation unit ('5min', '1H', '1D')
-        time_col (str): Time column name
-        temp_col (str): Temperature column name
-
-    Returns:
-        DataFrame: Aggregated temperature data
-    """
-    df[time_col] = pd.to_datetime(df[time_col], errors='coerce')
-    df = df.dropna(subset=[time_col])
-    df.set_index(time_col, inplace=True)
-
-    df_agg = df[[temp_col]].resample(unit).mean().reset_index()
-
-    return df_agg
-
-def baseline_asls(y, lam=1e6, p=0.4, niter=20):
-    """
-    Asymmetric least squares smoothing for baseline estimation
-    y: input signal
-    lam: smoothing penalty parameter
-    p: noise level
-    niter: number of iterations
-
-    Returns the estimated baseline
-    """
-    n = len(y)
-    D = sparse.diags([1, -2, 1], [0, 1, 2], shape=(n-2, n))
-    w = np.ones(n)
-    for _ in range(niter):
-        W = sparse.spdiags(w, 0, n, n)
-        Z = W + lam * (D.T @ D)
-        z = spsolve(Z, w * y)
-        w = p * (y > z) + (1-p) * (y < z)
-
-    return z
-
-def detect_onsets_offsets(temp_series, time_series, min_samples=2):
-    """
-    Find onsets and offsets of peaks by tracking the baseline and using dual threshold
-    """
-    # Compute baseline
-    baseline = baseline_asls(temp_series)
-    delta = temp_series - baseline
-
-    events = []
-    in_event = False
-    onset = None
-    consec = 0
-    threshold = 3
-
-    for idx, dT in enumerate(delta):
-        if not in_event:
-            # Register as onset if deltaT is higher than high_gate
-            if dT >= threshold:
-                onset = max(0, idx-1)
-                in_event = True
-
-        else:
-            # Register as offset if already in event and deltaT is lower than low_gate
-            if dT <= threshold:
-                consec += 1
-                threshold = dT # dT decreases as the offset occurs
-                # Register offset if the decrease in dT was not a noise
-                if consec >= min_samples:
-                    # Temperature cooling takes longer; go back 5 data points to find when the peak happened
-                    prev_idx = max(0, idx-5)
-                    if prev_idx > 0:
-                        max_idx = np.argmax(delta[prev_idx:idx]) + prev_idx
-                        if (delta[max_idx] - delta[max_idx+1]) > 1:
-                            offset = min(max_idx+1, idx)
-                        else:
-                            offset = min(max_idx+2, idx)
-                    else:
-                        offset = idx # Fall back value
-                    if offset > onset:
-                        events.append((onset, offset))
-                    
-                    in_event = False
-                    consec = 0
-                    threshold = 3
-                # For rapid cooling, register offset immediately
-                elif idx > 0 and dT-delta[idx-1] > threshold:
-                    offset = idx
-                    if offset > onset:
-                        events.append((onset, offset))
-                    in_event = False
-                    consec = 0
-                    threshold = 3
-                else:
-                    consec = 0
-
-    # Handle open event at the end of the record
-    if in_event:
-        events.append((onset, len(temp_series)-1))
-
-    out = pd.DataFrame(events, columns=['StartIdx', 'EndIdx'])
-    out['Onset'] = time_series.iloc[out['StartIdx']].values
-    out['Offset'] = time_series.iloc[out['EndIdx']].values
-    out['DurationMin'] = (out['Offset'] - out['Onset']).dt.total_seconds()/60
-    return baseline, delta, out
-    
-def extract_peaks(temp_series, time_series, events_df):
-    """
-    Returns a DaraFrame composed of PeakTime, PeakTemp
-    """
-    rows = []
-    for _, event in events_df.iterrows():
-        seg = temp_series.iloc[event.StartIdx:(event.EndIdx+1)]
-        rel_idx = int(np.argmax(seg))
-        rows.append({
-            "EventID": event.EventID,
-            "PeakTemp": seg.iloc[rel_idx],
-            "PeakTime": time_series.loc[event.StartIdx + rel_idx]
-        })
-
-    return pd.DataFrame(rows)
-
-def prepare_gantt(onset_times, offset_times):
-    split_rows = []
-
-    for i in range(len(onset_times)):
-        start = pd.to_datetime(onset_times[i])
-        end = pd.to_datetime(offset_times[i])
-        
-        current = start
-        while current.date() <= end.date():
-            this_date = current.date()
-
-            if this_date == start.date() and this_date == end.date():
-                # Same day: normal case
-                start_hr = start.hour + start.minute / 60
-                end_hr = end.hour + end.minute / 60
-            elif this_date == start.date():
-                # First day of a multi-day span
-                start_hr = start.hour + start.minute / 60
-                end_hr = 24.0
-            elif this_date == end.date():
-                # Final day of a multi-day span
-                start_hr = 0.0
-                end_hr = end.hour + end.minute / 60
-            else:
-                # Middle day
-                start_hr = 0.0
-                end_hr = 24.0
-            
-            split_rows.append({
-                'Date': str(this_date),
-                'StartHour': start_hr,
-                'EndHour': end_hr,
-                'Start': onset_times[i],
-                'End': offset_times[i]
-            })
-
-            current += pd.Timedelta(days=1)
-    return pd.DataFrame(split_rows)
-
-def prepare_occurance_summary(onset_times, offset_times):
-    onset_series = pd.to_datetime(onset_times)
-    offset_series = pd.to_datetime(offset_times)
-
-    summary_rows = []
-
-    for start, end in zip(onset_series, offset_series):
-        current = start
-        while current.date() <= end.date():
-            date = current.date()
-
-            if date == start.date() and date == end.date():
-                dur = (end - start).total_seconds() / 60.0
-            elif date == start.date():
-                dur = ((pd.Timestamp.combine(date + pd.Timedelta(days=1), pd.Timestamp.min.time()) - start).total_seconds()) / 60.0
-            elif date == end.date():
-                dur = ((end - pd.Timestamp.combine(date, pd.Timestamp.min.time())).total_seconds()) / 60.0
-
-            else:
-                dur = 1440.0  # full day = 24h = 1440 minutes
-
-            summary_rows.append({'Date': date, 'DurationMin': dur})
-            current += pd.Timedelta(days=1)
-
-    summary_df = pd.DataFrame(summary_rows)
-
-    return summary_df.groupby('Date').agg(
-                TotalDurationMin=('DurationMin', 'sum'),
-                EventCount=('DurationMin', 'count')
-            ).reset_index()
-
-# Callback #2- Generate basic information after file upload
+# Callback #2 - Generate basic information after file upload
 @app.callback(
-    [Output('output-data-upload', 'children'),
-    Output('aggregation-control', 'style'),
-    Output('aggregation-graph-container', 'style')],
-    [Input('intermediate-value', 'data'),
-     Input('column-info', 'data')],
-    [State('metadata-value', 'data')]
+    [Output('output-data', 'children')],
+    [Input('df-value', 'data')]
 )
-def update_dashboard(json_data, column_info, json_metadata):
-    if not json_data or not column_info:
-        return html.H6("Upload the file to generate the analysis view.", style={"textAlign":"center"}), {'display': 'none'}, {'display': 'none'}
-
-    df = pd.read_json(json_data, orient='split')
-    column_data = json.loads(column_info)
-    time_col = column_data.get('time_col')
-    temp_col = column_data.get('temp_col')
-
-    if not time_col or not temp_col:
-        return html.Div([
-            html.H4('Error', style={'color': 'red'}),
-            html.P("Could not identify time and temperature columns.")
-        ]), {'display': 'none'}, {'display': 'none'}, {'display': 'none'}
-
+def update_dashboard(json_data):
+    if not json_data:
+        return [html.Div([
+            html.H6("Upload the file to generate the analysis view.", style={"textAlign":"center"})
+        ])]
     try:
-        # Convert time_col and temp_col datatype
-        df[time_col] = pd.to_datetime(df[time_col], errors='coerce')
-        df[temp_col] = pd.to_numeric(df[temp_col], errors='coerce')
-        df = df.dropna(subset=[time_col, temp_col])
+        df = pd.read_json(json_data, orient='split')
+        df['Timestamp'] = pd.to_datetime(df['Timestamp'])
+        df['Temperature'] = pd.to_numeric(df['Temperature'])
+        df = df.reset_index(drop=True)
+        
+        time_col = df["Timestamp"]
+        temp_col = df["Temperature"]
     except Exception as e:
-        return html.Div([
+        return [html.Div([
             html.H4('Error', style={'color': 'red'}),
             html.P(str(e))
-        ]), {'display': 'none'}, {'display': 'none'}
-    
+        ])]
+
     # Peak detection
     peaks_table = None
     peak_fig = None
     try:
-        df_agg = aggregate_data(df.copy(), '5min', time_col, temp_col)
         # Find onsets and offsets event and their peaks
-        baseline, delta, events_df = detect_onsets_offsets(df_agg[temp_col], df_agg[time_col])
-        print("after detect_onsets_offsets")
+        baseline, delta, events_df = analysis_helper.detect_onsets_offsets(time_col, temp_col)
         events_df = events_df.reset_index(drop=True)
         events_df['EventID'] = events_df.index
-        peaks_df = extract_peaks(df_agg[temp_col], df_agg[time_col], events_df)
+        peaks_df = analysis_helper.extract_peaks(time_col, temp_col, events_df)
 
         # Merge events_df and peaks_df
         peak_events_df = (
@@ -527,7 +159,7 @@ def update_dashboard(json_data, column_info, json_metadata):
         )
 
         peak_events_df = (
-            peak_events_df[["Onset", "Offset", "DurationMin", "PeakTemp", ]]
+            peak_events_df[["Onset", "Offset", "DurationMin", "PeakTemp"]]
                     .rename(columns={
                         "Onset": "Start",
                         "Offset": "End",
@@ -535,24 +167,23 @@ def update_dashboard(json_data, column_info, json_metadata):
                         "PeakTemp": "Peak Temperature (°C)"
                     })
         )
-        # DEBUG
-        print(peak_events_df)
+        print("peak_events_df: ", peak_events_df)
 
         # Plot peaks figure, where the detected peaks are highlighted
         peak_fig = px.line(
-            df_agg,
-            x=time_col,
-            y=temp_col,
-            labels={time_col: 'Time', temp_col: 'Temperature (°C)'}
+            df,
+            x="Timestamp",
+            y="Temperature",
+            labels={"Timestamp": 'Time', "Temperature": 'Temperature (°C)'}
         )
         peak_fig.add_trace(go.Scatter(
-            x=df_agg[time_col],
+            x=time_col,
             y=baseline,
             name="AsLS baseline",
             line=dict(color='red', width=1)
         ))
         peak_fig.add_trace(go.Scatter(
-            x=df_agg[time_col],
+            x=time_col,
             y=delta,
             name="Delta",
             line=dict(color='black', width=1)
@@ -574,7 +205,6 @@ def update_dashboard(json_data, column_info, json_metadata):
             font=dict(color='#2c3e50'),
             margin=dict(t=10)
         )
-
         peaks_table = html.Div([
             DataTable(
                 data=peak_events_df.to_dict('records'),
@@ -586,10 +216,11 @@ def update_dashboard(json_data, column_info, json_metadata):
         ])
 
         # Gantt Chart
-        gantt_df = prepare_gantt(peak_events_df["Start"], peak_events_df["End"])
+        gantt_df = analysis_helper.prepare_gantt(peak_events_df["Start"], peak_events_df["End"])
         gantt_fig = go.Figure()
 
-        for idx, row in gantt_df.iterrows():
+        print("building gantt")
+        for _, row in gantt_df.iterrows():
             gantt_fig.add_trace(go.Scatter(
                 x=[row['Date'], row['Date']],
                 y=[row['StartHour'], row['EndHour']],
@@ -652,9 +283,10 @@ def update_dashboard(json_data, column_info, json_metadata):
             layer="below",
             line_width=0
         )
+        print("done with gantt")
 
         # Daily Summary
-        daily_summary = prepare_occurance_summary(peak_events_df["Start"], peak_events_df["End"])
+        daily_summary = analysis_helper.prepare_occurance_summary(peak_events_df["Start"], peak_events_df["End"])
         summary_fig = go.Figure()
 
         summary_fig.add_trace(go.Bar(
@@ -681,14 +313,13 @@ def update_dashboard(json_data, column_info, json_metadata):
         )
 
         avg_peak_temp = peaks_df['PeakTemp'].mean()
-
-        non_peak_series = pd.Series(True, index=df_agg.index)
+        non_peak_series = pd.Series(True, index=df.index)
         for _, row in peak_events_df.iterrows():
-            in_peak = df_agg[time_col].between(row['Start'], row['End'])
+            in_peak = time_col.between(row['Start'], row['End'])
             non_peak_series &= ~in_peak
 
         # Apply the mask to get non-peak temperature readings
-        non_peak_temps = df_agg.loc[non_peak_series, temp_col]
+        non_peak_temps = df.loc[non_peak_series, "Temperature"]
         avg_non_peak_temp = non_peak_temps.mean()
         
         stats_info = html.Div([
@@ -698,7 +329,7 @@ def update_dashboard(json_data, column_info, json_metadata):
             html.Div([html.Strong('Average Total Duration Minutes Per Day: '), html.Span((f"{np.mean(daily_summary['TotalDurationMin']):.1f} Minutes"))])
         ], style={'marginTop':'10px', 'marginBottom':'10px'})
 
-        return html.Div([
+        return [html.Div([
             html.Hr(style={'margin': '20px 0'}),
             html.H4('Estimated Occurance Detection', style={'marginTop': '30px'}),
             dcc.Graph(
@@ -715,56 +346,15 @@ def update_dashboard(json_data, column_info, json_metadata):
                 figure=summary_fig,
                 config={'displayModeBar': True},
             ) if summary_fig else html.Div(),
-            # stats_info,
             html.H4('Splint Wearing Periods by Hour of Day', style={'marginTop': '30px'}),
             dcc.Graph(
                 id='gantt-chart',
                 figure=gantt_fig,
                 config={'displayModeBar': True},
             ) if gantt_fig else html.Div()
-        ]), {'display': 'block'},{'display': 'block'}
+        ])]
     except Exception as e:
-        return html.Div([
+        return [html.Div([
             html.H4("Peak Detection Failed", style={'color': 'red'}),
             html.P(str(e))
-        ]),{'display': 'none'},{'display': 'none'}
-
-# Callback #3 - Update aggregated graph based on user input
-@app.callback(
-    Output('temperature-graph', 'figure'),
-    [Input('intermediate-value', 'data'),
-     Input('column-info', 'data'),
-     Input('aggregation-interval', 'value')]
-)
-def update_aggregated_graph(json_data, column_info, aggregation_interval):
-    if not json_data or not column_info: return {}
-
-    df = pd.read_json(json_data, orient='split')
-    column_data = json.loads(column_info)
-    time_col = column_data.get('time_col')
-    temp_col = column_data.get('temp_col')
-
-    if aggregation_interval == 'none':
-        df_agg = df.copy()
-    else:
-        df_agg = aggregate_data(df.copy(), aggregation_interval, time_col, temp_col)
-
-    fig = px.line(
-        df_agg,
-        x=time_col,
-        y=temp_col,
-        # title=f'<b>Time vs Temperature ({aggregation_interval}</b>)',
-        labels={time_col: 'Time', temp_col: 'Temperature (°C)'}
-    )
-
-    fig.update_layout(
-        xaxis_title='Time',
-        yaxis_title='Temperature (°C)',
-        hovermode='closest',
-        plot_bgcolor='rgba(240, 240, 240, 0.5)',
-        paper_bgcolor='rgba(0, 0, 0, 0)',
-        font=dict(color='#2c3e50'),
-        margin=dict(t=10)
-    )
-
-    return fig
+        ])]

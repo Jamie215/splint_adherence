@@ -1,12 +1,9 @@
 #include <Wire.h>
 #include <FlashIAP.h>
-
-// Include required Arduino libraries
+#include <Arduino_APDS9960.h>
 #include "HS300x.h"  // Temperature/humidity sensor library
 
 using namespace mbed;
-
-#define DEFAULT_WAKEUP_INTERVAL 300 // Default 5 minutes (in seconds)
 
 // Flash storage parameters
 #define FLASH_PAGE_SIZE          4096  // 4KB pages on nRF52840
@@ -39,12 +36,15 @@ struct InitializationData {
 struct TemperatureData {
     uint32_t index;
     float temperature;
+    uint8_t r;
+    uint8_t g;
+    uint8_t b;
 };
 
 // Configuration data with defaults
 ConfigData config = {
     0,                       // initialTimestamp - 0 means not initialized
-    DEFAULT_WAKEUP_INTERVAL, // wakeupInterval
+    0,                     // wakeupInterval - 0 means not initalized
     "DEFAULT_ID",            // personalId
     MODE_IDLE,               // mode - default to command mode
 };
@@ -86,7 +86,7 @@ bool saveConfig() {
 }
 
 // Function to save temperature reading to flash
-bool saveTemperatureReading(float temperature) {
+bool saveTemperatureReading(float temperature, uint8_t r, uint8_t g, uint8_t b) {
     uint32_t dataOffset = currentIndex * sizeof(TemperatureData);
     uint32_t dataAddress = DATA_START_ADDRESS + dataOffset;
     
@@ -100,6 +100,9 @@ bool saveTemperatureReading(float temperature) {
     TemperatureData data;
     data.index = currentIndex;
     data.temperature = temperature;
+    data.r = r;
+    data.g = g;
+    data.b = b;
     
     // Write to flash with detailed error reporting
     int writeResult = flash.program(&data, dataAddress, sizeof(TemperatureData));
@@ -166,22 +169,6 @@ bool initializeDevice(const uint8_t* packedData) {
     return saveConfig();
 }
 
-// Modified enterSleep function that uses delay for timing
-void enterSleep() {
-    // Only enter sleep in logging mode
-    if (currentMode != MODE_LOGGING) return;
-    
-    // Power off sensors
-    HS300x.end();
-    delay(10);
-    
-    delay(config.wakeupInterval * 1000);
-    
-    // Re-initialize the sensor
-    HS300x.begin();
-    delay(10);
-}
-
 // Function to scan flash and find the highest used data index
 uint32_t findHighestDataIndex() {
     uint32_t highestIndex = 0;
@@ -218,7 +205,7 @@ void sendReadableData() {
     Serial.println(config.personalId);
     
     // Send column headers
-    Serial.println("Timestamp,Temperature");
+    Serial.println("Timestamp,Temperature,Red,Green,Blue");
     
     // Read and send data entries
     TemperatureData data;
@@ -240,7 +227,13 @@ void sendReadableData() {
         // Send data point
         Serial.print(timestamp);
         Serial.print(",");
-        Serial.println(data.temperature, 2);
+        Serial.print(data.temperature, 2);
+        Serial.print(",");
+        Serial.print(data.r);
+        Serial.print(",");
+        Serial.print(data.g);
+        Serial.print(",");
+        Serial.println(data.b);
         delay(5); // Small delay to prevent overrun
     }
     
@@ -416,10 +409,6 @@ void setup() {
     // Set current mode from config
     currentMode = config.mode;
     
-    // Initialize temperature sensor
-    HS300x.begin();
-    delay(100);
-    
     // Handle serial based on mode
     if (currentMode == MODE_IDLE) {        
         // Turn on RGB LED to indicate Data Collection has ended
@@ -436,12 +425,28 @@ void setup() {
 void loop() {
     switch (currentMode) {
         case MODE_LOGGING: {
-            digitalWrite(LED_PWR, HIGH);
-            float temperature = HS300x.readTemperature();
+            // Initialize sensors & LED
+            APDS.begin();
+            HS300x.begin();
+            delay(50);
+
+            int r, g, b;
+
+            while (!APDS.colorAvailable()) {
+                digitalWrite(LED_PWR, HIGH);
+            }
             digitalWrite(LED_PWR, LOW);
 
+            // Turn on red LED, read colour, and turn off red LED
+            digitalWrite(LEDR, LOW);
+            delay(50); // Wait until LED is stabilized
+            APDS.readColor(r, g, b);
+            digitalWrite(LEDR, HIGH);
+
+            float temperature = HS300x.readTemperature();
+
             // Save reading to flash
-            if (!saveTemperatureReading(temperature)) {
+            if (!saveTemperatureReading(temperature, r, g, b)) {
                 // Error saving, switch to idle mode
                 currentMode = MODE_IDLE;
                 config.mode = MODE_IDLE;
@@ -449,8 +454,13 @@ void loop() {
                 return;
             }
             
-            // Go to sleep
-            enterSleep();
+            // Turn off sensors & LED
+            APDS.end();
+            HS300x.end();
+            digitalWrite(LED_PWR, LOW);
+            
+            // Sleep
+            delay(config.wakeupInterval * 1000);
             break;
         }
         case MODE_IDLE:
