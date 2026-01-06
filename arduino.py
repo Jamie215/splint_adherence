@@ -1,6 +1,4 @@
-import csv
 import io
-import os
 import time
 import datetime
 import struct
@@ -311,10 +309,10 @@ def process_buffer_data(data: bytearray, output: io.StringIO, in_metadata: bool)
         
         # Process the line according to state
         if in_metadata:
-            if line_str.startswith("Timestamp,Temperature,Red,Green,Blue"):
+            if line_str.startswith("Timestamp,Temperature,ProximityVal"):
                 # Found header line, switch to data mode
                 in_metadata = False
-                output.write("Timestamp,Temperature,Red,Green,Blue\r\n")
+                output.write("Timestamp,Temperature,ProximityVal\r\n")
             elif line_str.startswith("Initial Timestamp,"):
                 # Process timestamp in metadata
                 parts = line_str.split(',', 1)
@@ -335,14 +333,14 @@ def process_buffer_data(data: bytearray, output: io.StringIO, in_metadata: bool)
             # Data section
             parts = line_str.split(',')
             print("parts: ", parts)
-            if len(parts) == 2 and parts[0].strip().isdigit():
+            if len(parts) == 3 and parts[0].strip().isdigit():
                 # It's a data line with timestamp
                 try:
                     epoch_time = int(parts[0].strip())
                     iso_time = datetime.datetime.fromtimestamp(
                         epoch_time, tz=datetime.timezone.utc
                     ).strftime('%Y-%m-%d %H:%M:%S')
-                    output.write(f"{iso_time},{parts[1]},{parts[2]},{parts[3]}\r\n")
+                    output.write(f"{iso_time},{parts[1]},{parts[2]}\r\n")
                 except (ValueError, OverflowError) as e:
                     # Handle invalid timestamps
                     print(f"Warning: Invalid timestamp {parts[0]}: {e}")

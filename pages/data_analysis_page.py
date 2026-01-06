@@ -7,6 +7,7 @@ import dash_bootstrap_components as dbc
 from dash.dash_table import DataTable
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 import numpy as np
 
@@ -132,53 +133,99 @@ def update_dashboard(json_data):
         df = pd.read_json(json_data, orient='split')
         df['Timestamp'] = pd.to_datetime(df['Timestamp'])
         df['Temperature'] = pd.to_numeric(df['Temperature'])
-        df['Red'] = pd.to_numeric(df['Red'])
-        df['Green'] = pd.to_numeric(df['Green'])
-        df['Blue'] = pd.to_numeric(df['Blue'])
+        df['ProximityVal'] = pd.to_numeric(df['ProximityVal'])
         df = df.reset_index(drop=True)
-        
-        time_col = df["Timestamp"]
-        temp_col = df["Temperature"]
 
     except Exception as e:
-        return [html.Div([
-            html.H4('Error', style={'color': 'red'}),
-            html.P(str(e))
-        ])]
+        print(e)
+        # Compatibility with older version data
+        if 'proximity' in str(e).lower():
+            df['ProximityVal'] = np.zeros(len(df))
+        else:
+            return [html.Div([
+                html.H4('Error', style={'color': 'red'}),
+                html.P(str(e))
+            ])]
+        
+    time_col = df["Timestamp"]
+    temp_col = df["Temperature"]
+    prox_col = df['ProximityVal']
     
     # Peak detection
     peaks_table = None
-    peak_fig = None
+    combined_fig = None
     try:
         # Find onsets and offsets event and their peaks
-        baseline, delta, events_df = analysis_helper.detect_onsets_offsets(time_col, temp_col)
+        baseline, delta, events_df = analysis_helper.detect_onsets_offsets(time_col, temp_col, prox_col)
         print("events_df: ", events_df)
 
         # No peak detected
         if events_df.empty:
             # No events detected - create basic plots without peak annotations
-            colour_fig = go.Figure()
-            colour_fig.add_trace(go.Scatter(x=df['Timestamp'], y=df['Red'], name='Red', line=dict(color='red')))
-            colour_fig.add_trace(go.Scatter(x=df['Timestamp'], y=df['Green'], name='Green', line=dict(color='green')))
-            colour_fig.add_trace(go.Scatter(x=df['Timestamp'], y=df['Blue'], name='Blue', line=dict(color='blue')))
-            colour_fig.update_layout(xaxis_title='Time', yaxis_title='Color Value', title='RGB Values Over Time')
-            
-            # Temperature plot
-            peak_fig = px.line(df, x="Timestamp", y="Temperature", labels={"Timestamp": 'Time', "Temperature": 'Temperature (°C)'})            
-            # Create simple stats
-            avg_temp = temp_col.mean()
-            stats_info = html.Div([
-                html.Div([html.Strong('Average Temperature: '), html.Span(f"{avg_temp:.2f}°C")]),
-                html.Div([html.Strong('No temperature peaks detected in this dataset')])
-            ], style={'marginTop':'10px', 'marginBottom':'10px'})
+            combined_fig = make_subplots(specs=[[{"secondary_y": True}]])
+            combined_fig.add_trace(
+                go.Scatter(
+                    x=df['Timestamp'],
+                    y=prox_col,
+                    name="Proximity Value",
+                    line=dict(color="red", dash='dot')
+                ),
+                secondary_y=True
+            )
+            combined_fig.add_trace(
+                go.Scatter(
+                    x=df["Timestamp"],
+                    y=df["Temperature"],
+                    name="Temperature (°C)",
+                    line=dict(color="black")
+                ),
+                secondary_y=False
+            )
+            combined_fig.add_trace(
+                go.Scatter(
+                    x=df["Timestamp"],
+                    y=baseline,
+                    name="Rolling Min Baseline",
+                    line=dict(color="black", dash='dot')
+                ),
+                secondary_y=False
+            )
+            combined_fig.add_trace(
+                go.Scatter(
+                    x=df["Timestamp"],
+                    y=delta,
+                    name="Delta",
+                    line=dict(color="black", dash='dash')
+                ),
+                secondary_y=False
+            )
+
+            combined_fig.update_xaxes(title_text="Time")
+            combined_fig.update_yaxes(title_text="Proximity Value", secondary_y=True, color='red')
+            combined_fig.update_yaxes(title_text="Temperature (°C)", secondary_y=False)
+
+            # Optional: Update layout
+            combined_fig.update_layout(
+                title="Temperature and Proximity Value Over Time",
+                hovermode="x unified",
+                plot_bgcolor='rgba(240, 240, 240, 0.5)',
+                paper_bgcolor='rgba(0, 0, 0, 0)',
+                font=dict(color='#2c3e50'),
+                margin=dict(t=60),
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom",
+                    y=-0.25,
+                    xanchor="center",
+                    x=0.5
+                )
+            )
             
             return [html.Div([
                 html.Hr(style={'margin': '20px 0'}),
                 html.H4('Data Analysis', style={'marginTop': '30px'}),
-                dcc.Graph(id='colour-graph', figure=colour_fig, config={'displayModeBar': True}, style={'height': '450px'}),
-                dcc.Graph(id='peak-graph', figure=peak_fig, config={'displayModeBar': True}, style={'height': '450px'}),
+                dcc.Graph(id='combined-graph', figure=combined_fig, config={'displayModeBar': True}, style={'height': '500px'}),
                 html.H4('Summary', style={'marginTop': '30px'}),
-                stats_info,
                 html.P('No significant temperature events were detected in this dataset.')
             ])]
         
@@ -203,72 +250,69 @@ def update_dashboard(json_data):
         )
         print("peak_events_df: ", peak_events_df)
 
-        # Plot RGB value fluctuations
-        colour_fig = go.Figure()
-
-        colour_fig.add_trace(go.Scatter(
-            x=df['Timestamp'],
-            y=df['Red'],
-            name='Red',
-            line=dict(color='red')
-        ))
-
-        colour_fig.add_trace(go.Scatter(
-            x=df['Timestamp'],
-            y=df['Green'],
-            name='Green',
-            line=dict(color='green')
-        ))
-
-        colour_fig.add_trace(go.Scatter(
-            x=df['Timestamp'],
-            y=df['Blue'],
-            name='Blue',
-            line=dict(color='blue')
-        ))
-
-        colour_fig.update_layout(
-            xaxis_title='Time',
-            yaxis_title='Color Value',
-            title='RGB Values Over Time'
-        )
-        
-        # Plot peaks figure, where the detected peaks are highlighted
-        peak_fig = px.line(
-            df,
-            x="Timestamp",
-            y="Temperature",
-            labels={"Timestamp": 'Time', "Temperature": 'Temperature (°C)'}
-        )
-        peak_fig.add_trace(go.Scatter(
-            x=time_col,
-            y=baseline,
-            name="AsLS baseline",
-            line=dict(color='red', width=1)
-        ))
-        peak_fig.add_trace(go.Scatter(
-            x=time_col,
-            y=delta,
-            name="Delta",
-            line=dict(color='black', width=1)
-        ))
-        for _, row in peak_events_df.iterrows():
-            peak_fig.add_vrect(x0=row['Start'], x1=row['End'],
-                              fillcolor="LightGreen", opacity=0.3,
-                              layer="below", line_width=0)
-
-        peak_fig.update_layout(
-            xaxis_title='Time',
-            yaxis_title='Temperature (°C)',
-            hovermode='closest',
-            hoverlabel=dict(
-                font=dict(color='white')
+        combined_fig = make_subplots(specs=[[{"secondary_y": True}]])
+        combined_fig.add_trace(
+            go.Scatter(
+                x=df['Timestamp'],
+                y=prox_col,
+                name="Proximity Value",
+                line=dict(color="red", dash='dot')
             ),
+            secondary_y=True
+        )
+        combined_fig.add_trace(
+            go.Scatter(
+                x=df["Timestamp"],
+                y=df["Temperature"],
+                name="Temperature (°C)",
+                line=dict(color="black")
+            ),
+            secondary_y=False
+        )
+        combined_fig.add_trace(
+                go.Scatter(
+                    x=df["Timestamp"],
+                    y=baseline,
+                    name="Rolling Min Baseline",
+                    line=dict(color="blue", dash='dot')
+                ),
+                secondary_y=False
+            )
+        combined_fig.add_trace(
+            go.Scatter(
+                x=df["Timestamp"],
+                y=delta,
+                name="Delta",
+                line=dict(color="green", dash='dot')
+            ),
+            secondary_y=False
+        )
+
+        combined_fig.update_xaxes(title_text="Time")
+        combined_fig.update_yaxes(title_text="Proximity Value", secondary_y=True, color='red')
+        combined_fig.update_yaxes(title_text="Temperature (°C)", secondary_y=False)
+
+        # Optional: Update layout
+        combined_fig.update_layout(
+            title="Temperature and Proximity Value Over Time",
+            hovermode="x unified",
             plot_bgcolor='rgba(240, 240, 240, 0.5)',
             paper_bgcolor='rgba(0, 0, 0, 0)',
             font=dict(color='#2c3e50'),
-            margin=dict(t=10)
+            margin=dict(t=60),
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=-0.25,
+                xanchor="center",
+                x=0.5
+            )
         )
+        for _, row in peak_events_df.iterrows():
+            combined_fig.add_vrect(x0=row['Start'], x1=row['End'],
+                              fillcolor="LightGreen", opacity=0.3,
+                              layer="below", line_width=0)
+
         peaks_table = html.Div([
             DataTable(
                 data=peak_events_df.to_dict('records'),
@@ -395,17 +439,11 @@ def update_dashboard(json_data):
             html.Hr(style={'margin': '20px 0'}),
             html.H4('Estimated Occurance Detection', style={'marginTop': '30px'}),
             dcc.Graph(
-                id='colour-graph',
-                figure=colour_fig,
+                id='combined-graph',
+                figure=combined_fig,
                 config={'displayModeBar': True},
-                style={'height': '450px'}
-            ),
-            dcc.Graph(
-                id='peak-graph',
-                figure=peak_fig,
-                config={'displayModeBar': True},
-                style={'height': '450px'}
-            ) if peak_fig else html.Div(),
+                style={'height': '500px'}
+            ) if combined_fig else html.Div(),
             peaks_table,
             html.H4('Estimated Splint-Wearing Summary', style={'marginTop': '30px'}),
             stats_info,

@@ -1,29 +1,29 @@
 #include <Wire.h>
 #include <FlashIAP.h>
 #include <Arduino_APDS9960.h>
-#include "HS300x.h"  // Temperature/humidity sensor library
+#include "HS300x.h"
 
 using namespace mbed;
 
 // Flash storage parameters
-#define FLASH_PAGE_SIZE          4096  // 4KB pages on nRF52840
+#define FLASH_PAGE_SIZE          4096
 #define CONFIG_ADDRESS           0x70000
 #define DATA_START_ADDRESS       0x80000
 #define MAX_DATA_ENTRIES         15000
 #define END_DATA_MARKER "END_DATA"
 
-// Simplified operation modes - only these two core states
+// Operation modes
 enum OperationMode {
-    MODE_IDLE = 0,       // Default mode, waits for commands/initialization
-    MODE_LOGGING = 1,    // Collecting temperature data
+    MODE_IDLE = 0,
+    MODE_LOGGING = 1,
 };
 
 // Data structures
 struct ConfigData {
-    uint32_t initialTimestamp;  // UNIX timestamp for data start
-    uint32_t wakeupInterval;    // Seconds between readings
-    char personalId[16];        // User identifier
-    OperationMode mode;         // Current operation mode
+    uint32_t initialTimestamp;   // UNIX timestamp for data start
+    uint32_t wakeupInterval;     // Seconds between readings
+    char personalId[16];         // User identifier
+    OperationMode mode;          // Current operation mode
 };
 
 struct InitializationData {
@@ -34,48 +34,41 @@ struct InitializationData {
 };
 
 struct TemperatureData {
-    uint32_t index;
+    uint32_t elapsedSeconds;     // Actual elapsed time since start (not index * interval)
     float temperature;
-    uint8_t r;
-    uint8_t g;
-    uint8_t b;
+    uint8_t proximityVal;        // Now unsigned to store 0-255 range
 };
 
-// Configuration data with defaults
+// Configuration data
 ConfigData config = {
-    0,                       // initialTimestamp - 0 means not initialized
-    0,                     // wakeupInterval - 0 means not initalized
-    "DEFAULT_ID",            // personalId
-    MODE_IDLE,               // mode - default to command mode
+    0,
+    0,
+    "DEFAULT_ID",
+    MODE_IDLE,
 };
 
 uint32_t currentIndex = 0;
-
-// Current operation mode
+uint32_t startMillis = 0;       // Track when logging started
 OperationMode currentMode = MODE_IDLE;
-
-// Flash access object
 FlashIAP flash;
 
-// Serial communication constants
 #define SERIAL_BAUD_RATE 9600
 
-// Function to save configuration to flash
-bool saveConfig() {
-    // Erase config page
-    int result = flash.erase(CONFIG_ADDRESS, FLASH_PAGE_SIZE);
-    if (result != 0) {
-        return false;
-    }
-    
-    // Program config data
-    result = flash.program(&config, CONFIG_ADDRESS, sizeof(ConfigData));
-    delay(100);
-    if (result != 0) {
-        return false;
-    }
+// Function declarations
+bool saveConfig();
+bool saveTemperatureReading(float temperature, uint8_t proximityVal, uint32_t elapsedSeconds);
+bool initializeDevice(const uint8_t* packedData);
+uint32_t findHighestDataIndex();
+void sendReadableData();
+void processSerialCommand();
 
-    // Verify written data
+bool saveConfig() {
+    int result = flash.erase(CONFIG_ADDRESS, FLASH_PAGE_SIZE);
+    if (result != 0) return false;
+    
+    result = flash.program(&config, CONFIG_ADDRESS, sizeof(ConfigData));
+    if (result != 0) return false;
+
     ConfigData verifyConfig;
     if (flash.read(&verifyConfig, CONFIG_ADDRESS, sizeof(ConfigData)) != 0 ||
         memcmp(&config, &verifyConfig, sizeof(ConfigData)) != 0) {
@@ -85,50 +78,33 @@ bool saveConfig() {
     return true;
 }
 
-// Function to save temperature reading to flash
-bool saveTemperatureReading(float temperature, uint8_t r, uint8_t g, uint8_t b) {
+bool saveTemperatureReading(float temperature, uint8_t proximityVal, uint32_t elapsedSeconds) {
     uint32_t dataOffset = currentIndex * sizeof(TemperatureData);
     uint32_t dataAddress = DATA_START_ADDRESS + dataOffset;
     
-    // Sanity check the address is within valid flash range
     if (dataAddress < flash.get_flash_start() || 
         dataAddress + sizeof(TemperatureData) > flash.get_flash_start() + flash.get_flash_size()) {
         return false;
     }
     
-    // Prepare temperature data
     TemperatureData data;
-    data.index = currentIndex;
+    data.elapsedSeconds = elapsedSeconds;  // Store actual elapsed time
     data.temperature = temperature;
-    data.r = r;
-    data.g = g;
-    data.b = b;
+    data.proximityVal = proximityVal;
     
-    // Write to flash with detailed error reporting
     int writeResult = flash.program(&data, dataAddress, sizeof(TemperatureData));
-    delay(100);
-    if (writeResult != 0) {
-        return false;
-    }
-        
-    // Update data index
-    currentIndex++;
+    if (writeResult != 0) return false;
     
+    currentIndex++;
     return true;
 }
 
-// Function to initialize device with parameters from packed data
 bool initializeDevice(const uint8_t* packedData) {
     InitializationData initData;
-
-    // Copy the packed data into our structure
     memcpy(&initData, packedData, sizeof(InitializationData));
 
-    // Verify checksum
     uint32_t calculatedChecksum = 0;
     const uint8_t* dataPtr = packedData;
-
-    // Sum all bytes except the last 4 bytes (which are the checksum)
     for (size_t i = 0; i < (sizeof(InitializationData) - sizeof(uint32_t)); ++i) {
         calculatedChecksum += dataPtr[i];
     }
@@ -139,11 +115,9 @@ bool initializeDevice(const uint8_t* packedData) {
         return false;
     }
 
-    // Calculate how many pages we need to erase based on MAX_DATA_ENTRIES
     uint32_t totalDataBytes = MAX_DATA_ENTRIES * sizeof(TemperatureData);
-    uint32_t pagesNeeded = (totalDataBytes + FLASH_PAGE_SIZE - 1) / FLASH_PAGE_SIZE; // Ceiling division
+    uint32_t pagesNeeded = (totalDataBytes + FLASH_PAGE_SIZE - 1) / FLASH_PAGE_SIZE;
     
-    // Erase all data pages
     for (uint32_t page = 0; page < pagesNeeded; page++) {
         uint32_t pageAddress = DATA_START_ADDRESS + (page * FLASH_PAGE_SIZE);
         int result = flash.erase(pageAddress, FLASH_PAGE_SIZE);
@@ -154,14 +128,12 @@ bool initializeDevice(const uint8_t* packedData) {
         }
     }
 
-    // Copy the initialization data to our config
     config.initialTimestamp = initData.timestamp;
     config.wakeupInterval = initData.wakeupInterval;
     
-    // Safely copy personal ID with explicit null termination
-    memset(config.personalId, 0, sizeof(config.personalId));  // Zero out first
+    memset(config.personalId, 0, sizeof(config.personalId));
     strncpy(config.personalId, initData.personalId, sizeof(config.personalId) - 1);
-    config.personalId[sizeof(config.personalId) - 1] = '\0';  // Ensure null termination
+    config.personalId[sizeof(config.personalId) - 1] = '\0';
     
     currentIndex = 0;
     config.mode = MODE_IDLE;
@@ -169,7 +141,6 @@ bool initializeDevice(const uint8_t* packedData) {
     return saveConfig();
 }
 
-// Function to scan flash and find the highest used data index
 uint32_t findHighestDataIndex() {
     uint32_t highestIndex = 0;
     TemperatureData data;
@@ -178,23 +149,17 @@ uint32_t findHighestDataIndex() {
         uint32_t dataAddress = DATA_START_ADDRESS + (i * sizeof(TemperatureData));
         
         if (flash.read(&data, dataAddress, sizeof(TemperatureData)) == 0) {
-            // Check if this is valid data (some simple validation)
             if (data.temperature > -100 && data.temperature < 200) {
-                // Valid temperature range, this slot is likely used
-                if (data.index >= highestIndex) {
-                    highestIndex = data.index + 1;
-                }
+                highestIndex = i + 1;
             }
         } else {
-            break; // Error reading, probably hit unused flash
+            break;
         }
     }
     return highestIndex;
 }
 
-// Function to send data in readable format(CSV)
 void sendReadableData() {
-    // Send metadata first
     Serial.print("Initial Timestamp,");
     Serial.println(config.initialTimestamp);
     
@@ -204,64 +169,52 @@ void sendReadableData() {
     Serial.print("Personal ID,");
     Serial.println(config.personalId);
     
-    // Send column headers
-    Serial.println("Timestamp,Temperature,Red,Green,Blue");
+    // Header indicates elapsed seconds
+    Serial.println("Timestamp,Temperature,ProximityVal");
     
-    // Read and send data entries
     TemperatureData data;
     uint32_t numEntries = findHighestDataIndex();
     
     for (uint32_t i = 0; i < numEntries; i++) {
         uint32_t dataAddress = DATA_START_ADDRESS + i * sizeof(TemperatureData);
         
-        // Read data from flash
         if (flash.read(&data, dataAddress, sizeof(TemperatureData)) != 0) {
             Serial.print("ERROR,");
             Serial.println(i);
             continue;
         }
         
-        // Calculate timestamp
-        uint32_t timestamp = config.initialTimestamp + (data.index * config.wakeupInterval);
+        // Calculate actual timestamp from elapsed seconds
+        uint32_t timestamp = config.initialTimestamp + data.elapsedSeconds;
         
-        // Send data point
         Serial.print(timestamp);
         Serial.print(",");
         Serial.print(data.temperature, 2);
         Serial.print(",");
-        Serial.print(data.r);
-        Serial.print(",");
-        Serial.print(data.g);
-        Serial.print(",");
-        Serial.println(data.b);
-        delay(5); // Small delay to prevent overrun
+        Serial.println(data.proximityVal);
+        delay(5);
     }
     
-    // Send end marker
-    Serial.print(END_DATA_MARKER);
+    Serial.println(END_DATA_MARKER);
 }
 
-// Function to process incoming serial command
 void processSerialCommand() {
     if (Serial.available()) {
         char cmd = Serial.read();
         
         switch (cmd) {
-            case '?': // Handshake request
+            case '?':
                 Serial.println("Hello World!");
                 break;
-            case '!': // Status request
-                {
-                    if (findHighestDataIndex() > 0) {
-                        Serial.println("HAS_DATA");
-                    } else {
-                        Serial.println("NEED_CONFIGURATION");
-                    }
+            case '!':
+                if (findHighestDataIndex() > 0) {
+                    Serial.println("HAS_DATA");
+                } else {
+                    Serial.println("NEED_CONFIGURATION");
                 }
                 break;
-            case 'i': // Initialize with binary timestamp
+            case 'i':
                 {
-                    // Size of the packed initialization data
                     const size_t dataSize = sizeof(InitializationData);
                     uint8_t packedData[dataSize];
 
@@ -283,11 +236,9 @@ void processSerialCommand() {
                         }
                     }
 
-                    // Initialize the device with the packed data
                     if (initializeDevice(packedData)) {                        
-                        // Send initialization confirmation
                         Serial.println("INITIALIZED");
-                        delay(1000);
+                        delay(100);
                         digitalWrite(LED_PWR, LOW);
                         digitalWrite(LEDR, HIGH);
                         digitalWrite(LEDG, HIGH);
@@ -298,11 +249,10 @@ void processSerialCommand() {
                     }
                 }
                 break;
-            case 'r': // Send data in readable format
+            case 'r':
                 sendReadableData();
                 break;
             default:
-                // Unknown command
                 Serial.println("UNKNOWN");
                 break;
         }
@@ -310,18 +260,14 @@ void processSerialCommand() {
 }
 
 void setup() {
-    // Initialize serial for debugging and commands
     Serial.begin(SERIAL_BAUD_RATE);
 
-    // Set & Disable LED_BUILTIN
     pinMode(LED_BUILTIN, OUTPUT);
     digitalWrite(LED_BUILTIN, LOW);
 
-    // Set LED_PWR
     pinMode(LED_PWR, OUTPUT);
     digitalWrite(LED_PWR, HIGH);
 
-    // Set & Disable On-board RGB LED
     #ifdef LEDR
     pinMode(LEDR, OUTPUT);
     digitalWrite(LEDR, HIGH);
@@ -337,55 +283,41 @@ void setup() {
     digitalWrite(LEDB, HIGH);
     #endif
 
-    // Initialize flash and load configuration
     if (flash.init() != 0) {
-        currentMode = MODE_IDLE;  // Default to command mode on error
+        currentMode = MODE_IDLE;
         saveConfig();
         Serial.println("Flash initialization failed");
         return;
     }
     
-    // Load configuration
     flash.read(&config, CONFIG_ADDRESS, sizeof(ConfigData));
-    
-    // Find current index for data storage
     currentIndex = findHighestDataIndex();
     
-    // Mode Switch Case: IDLE to LOGGING
+    // Mode transitions
     if (config.mode == MODE_IDLE && currentIndex == 0) {
         config.mode = MODE_LOGGING;
         saveConfig();
 
-        // Turn off unneeded features 
+        // Power saving configurations
         NRF_USBD->ENABLE = 0;
         NRF_CLOCK->TASKS_HFCLKSTOP = 1;
-
-        // Disable unused analog peripherals
         NRF_SAADC->ENABLE = 0;
         NRF_PWM0->ENABLE = 0;
         NRF_PWM1->ENABLE = 0;
         NRF_PWM2->ENABLE = 0;
         NRF_PDM->ENABLE = 0;
         NRF_I2S->ENABLE = 0;
-
-        // Disable SPI module
         NRF_SPI0->ENABLE = 0;
         NRF_SPI1->ENABLE = 0;
-
         NRF_UART0->TASKS_STOPTX = 1;
         NRF_UART0->TASKS_STOPRX = 1;
         NRF_UART0->ENABLE = 0;
         NRF_UARTE1->TASKS_STOPTX = 1;
         NRF_UARTE1->TASKS_STOPRX = 1;
         NRF_UARTE1->ENABLE = 0;
-
-        // Disable radio (BLE)
         NRF_RADIO->POWER = 0; 
-
-        // Disable other peripherals
         NRF_QDEC->ENABLE = 0;
         NRF_COMP->ENABLE = 0;
-
         NRF_POWER->DCDCEN = 1;
 
         *(volatile uint32_t *)0x40002FFC = 0;
@@ -395,72 +327,81 @@ void setup() {
         digitalWrite(LEDR, HIGH);
         digitalWrite(LEDG, HIGH);
         digitalWrite(LEDB, HIGH);
-    } else if (config.mode == MODE_LOGGING) { // Mode Switch Case: LOGGING to IDLE
+        
+        // FIXED: Record start time for accurate timing
+        startMillis = millis();
+        
+    } else if (config.mode == MODE_LOGGING) {
         config.mode = MODE_IDLE;
         saveConfig();
 
         NRF_USBD->ENABLE = 1;
         NRF_CLOCK->TASKS_HFCLKSTART = 1;
-
         NRF_UART0->ENABLE = 1;
         NRF_UARTE1->ENABLE = 1;
     }
     
-    // Set current mode from config
     currentMode = config.mode;
     
-    // Handle serial based on mode
     if (currentMode == MODE_IDLE) {        
-        // Turn on RGB LED to indicate Data Collection has ended
         digitalWrite(LEDR, HIGH);
         digitalWrite(LEDG, LOW);
         digitalWrite(LEDB, HIGH);
         Serial.println("Ready for Connection");
-    } 
-    else {
-        Serial.end(); // Close serial to save power in logging mode
+    } else {
+        Serial.end();
+        startMillis = millis();  // Initialize timing reference
     }
 }
 
 void loop() {
     switch (currentMode) {
         case MODE_LOGGING: {
-            // Initialize sensors & LED
+            // Calculate target wake time BEFORE doing any work
+            static uint32_t nextWakeTime = 0;
+            if (nextWakeTime == 0) {
+                nextWakeTime = millis();  // Initialize on first run
+            }
+            
+            // Calculate actual elapsed seconds since logging started
+            uint32_t elapsedSeconds = (millis() - startMillis) / 1000;
+            
+            // Initialize sensors
             APDS.begin();
             HS300x.begin();
             delay(50);
 
-            int r, g, b;
+            // Wait for proximity sensor
+            while (!APDS.proximityAvailable()) {}
 
-            while (!APDS.colorAvailable()) {
-                digitalWrite(LED_PWR, HIGH);
-            }
-            digitalWrite(LED_PWR, LOW);
-
-            // Turn on red LED, read colour, and turn off red LED
-            digitalWrite(LEDR, LOW);
-            delay(50); // Wait until LED is stabilized
-            APDS.readColor(r, g, b);
-            digitalWrite(LEDR, HIGH);
-
+            // Read sensors
+            int rawProximity = APDS.readProximity();
+            uint8_t proximityVal = (uint8_t)(rawProximity & 0xFF);  // Ensure 0-255 range
             float temperature = HS300x.readTemperature();
 
-            // Save reading to flash
-            if (!saveTemperatureReading(temperature, r, g, b)) {
-                // Error saving, switch to idle mode
+            // Save reading with actual elapsed time
+            if (!saveTemperatureReading(temperature, proximityVal, elapsedSeconds)) {
                 currentMode = MODE_IDLE;
                 config.mode = MODE_IDLE;
                 saveConfig();
                 return;
             }
             
-            // Turn off sensors & LED
+            // Turn off sensors
             APDS.end();
             HS300x.end();
             digitalWrite(LED_PWR, LOW);
             
-            // Sleep
-            delay(config.wakeupInterval * 1000);
+            // Calculate next wake time based on interval, not current time
+            nextWakeTime += config.wakeupInterval * 1000UL;
+            
+            // Calculate how long to sleep (accounting for work already done)
+            uint32_t currentTime = millis();
+            if (nextWakeTime > currentTime) {
+                uint32_t sleepDuration = nextWakeTime - currentTime;
+                delay(sleepDuration);
+            }
+            
             break;
         }
         case MODE_IDLE:

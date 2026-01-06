@@ -64,71 +64,77 @@ def baseline_asls(y, lam=1e6, p=0.4, niter=20):
 
     return z
 
-def detect_onsets_offsets(time_series, temp_series, min_samples=2):
+def detect_onsets_offsets(time_series, temp_series, prox_series):
     """
-    Find onsets and offsets of peaks by tracking the baseline and using dual threshold
+    Advanced detection using a 15-minute trend filter to prevent false triggers 
+    on cooling slopes, and relative peak drops for faster offset detection.
     """
-    # Compute baseline
-    baseline = baseline_asls(temp_series)
+    # 1. Pre-processing
+    # 12-hour window for stable ambient floor (288 samples @ 5min/sample)
+    baseline = temp_series.rolling(window=24, min_periods=1, center=True).min()
     delta = temp_series - baseline
+    gradient = temp_series.diff()
+    
+    # 15-minute Trend: Temperature difference compared to 3 samples ago
+    trend_15m = temp_series - temp_series.shift(3)
+
+    # Thresholds
+    ONSET_DELTA = 3.0      # Minimum heat above ambient to consider human
+    ONSET_GRAD = 0.8       # Minimum jump to trigger onset
+    OFFSET_GRAD = -0.4     # Detection of the 'cooling cliff'
+    OFFSET_DELTA = 1.5     # Safety floor for offset
+    PEAK_DROP_FACTOR = 0.8  # Trigger offset if temp drops to 80% of peak delta
 
     events = []
     in_event = False
-    onset = None
-    consec = 0
-    threshold = 3
+    onset_idx = None
+    current_max_delta = 0
 
-    for idx, dT in enumerate(delta):
+    for i in range(3, len(delta)):
         if not in_event:
-            # Register as onset if deltaT is higher than high_gate
-            if dT >= threshold:
-                onset = max(0, idx-1)
-                in_event = True
-
+            # ONSET CONDITIONS:
+            # 1. Proximity is 0 (something is covering the sensor)
+            # 2. Trend is POSITIVE (removes noise on cooling slopes)
+            # 3. Thermal Spike (Grad >= 0.8) OR Significant Heat (Delta >= 3.0)
+            is_trending_up = trend_15m[i] > 0
+            
+            if prox_series[i] == 0 and is_trending_up:
+                if gradient[i] >= ONSET_GRAD or delta[i] >= ONSET_DELTA:
+                    in_event = True
+                    onset_idx = i - 1
+                    current_max_delta = delta[i]
         else:
-            # Register as offset if already in event and deltaT is lower than low_gate
-            if dT <= threshold:
-                consec += 1
-                threshold = dT # dT decreases as the offset occurs
-                # Register offset if the decrease in dT was not a noise
-                if consec >= min_samples:
-                    # Temperature cooling takes longer; go back 5 data points to find when the peak happened
-                    prev_idx = max(0, idx-5)
-                    if prev_idx > 0:
-                        max_idx = np.argmax(delta[prev_idx:idx]) + prev_idx
-                        if (delta[max_idx] - delta[max_idx+1]) > 1:
-                            offset = min(max_idx+1, idx)
-                        else:
-                            offset = min(max_idx+2, idx)
-                    else:
-                        offset = idx # Fall back value
-                    if offset > onset:
-                        events.append((onset, offset))
-                    
-                    in_event = False
-                    consec = 0
-                    threshold = 3
-                # For rapid cooling, register offset immediately
-                elif idx > 0 and dT-delta[idx-1] > threshold:
-                    offset = idx
-                    if offset > onset:
-                        events.append((onset, offset))
-                    in_event = False
-                    consec = 0
-                    threshold = 3
-                else:
-                    consec = 0
+            # Track peak delta to enable relative offset detection
+            if delta[i] > current_max_delta:
+                current_max_delta = delta[i]
+            
+            # TERMINATION CONDITIONS:
+            is_cooling_fast = gradient[i] <= OFFSET_GRAD
+            is_below_peak = delta[i] < (current_max_delta * PEAK_DROP_FACTOR)
+            
+            # End session if:
+            # - Proximity is physically lost (>0)
+            # - OR it's cooling fast AND (is back near baseline OR has dropped significantly from peak)
+            if prox_series[i] > 0 or (is_cooling_fast and (delta[i] < OFFSET_DELTA or is_below_peak)):
+                # If triggered by cooling, the actual removal happened 1 sample (5m) prior
+                offset_idx = i - 1 if (prox_series[i] == 0) else i
+                
+                # Minimum session length check (10 mins)
+                if (offset_idx - onset_idx) >= 2:
+                    events.append((onset_idx, offset_idx))
+                
+                in_event = False
+                current_max_delta = 0
 
-    # Handle open event at the end of the record
-    if in_event:
-        events.append((onset, len(temp_series)-1))
-
+    # DataFrame preparation
     out = pd.DataFrame(events, columns=['StartIdx', 'EndIdx'])
-    out['Onset'] = time_series.iloc[out['StartIdx']].values
-    out['Offset'] = time_series.iloc[out['EndIdx']].values
-    out['DurationMin'] = (out['Offset'] - out['Onset']).dt.total_seconds()/60
-    return baseline, delta, out
+    if not out.empty:
+        out['Onset'] = time_series.iloc[out['StartIdx']].values
+        out['Offset'] = time_series.iloc[out['EndIdx']].values
+        out['DurationMin'] = (out['Offset'] - out['Onset']).dt.total_seconds()/60
     
+    return baseline, delta, out
+
 def extract_peaks(time_series, temp_series, events_df):
     """
     Returns a DaraFrame composed of PeakTime, PeakTemp
