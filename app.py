@@ -14,9 +14,7 @@ import webbrowser
 
 from dash import html, dcc, Input, Output
 from flask import request, jsonify, render_template_string
-import psutil
 import dash_bootstrap_components as dbc
-import requests
 
 from app_instance import app, socketio, server
 from pages.data_analysis_page import data_analysis_layout
@@ -75,21 +73,15 @@ def notify_server_timeout():
 
 def shutdown_server():
     """
-    Shut down the server when the user exists from the browser based on heartbeat timer
+    Shut down the server when the user exits from the browser based on the
+    heartbeat timer.
+
+    This runs from a background Timer thread with no request context, and the
+    app is served by gevent/SocketIO rather than the Werkzeug dev server, so
+    there is no in-process "graceful shutdown" hook to call. Exiting the
+    process is the reliable option; atexit handlers (see clean_up) still run.
     """
     logging.info("No heartbeat received; shutting down server.")
-    try:
-        func = request.environ.get('werkzeug.server.shutdown')
-        func()
-    except:
-        logging.error("Werkzeug server shutdown function not available.")
-        pid = os.getpid()
-        process = psutil.Process(pid)
-        for proc in process.children(recursive=True):
-            proc.kill()
-        process.kill()
-        logging.error("Killed process.")
-    # Exit the process as a fallback
     os._exit(0)
 
 @server.route("/heartbeat", methods=["POST"])
@@ -111,7 +103,7 @@ def timeout():
             <html>
                 <head><title>Server Terminated</title></head>
                 <body>
-                    <<h1>Interface Terminated</h1>
+                    <h1>Interface Terminated</h1>
                     <p> The server has terminated due to inactivity. Please close this tab and relaunch the application.</p>
                 </body>
             </html>
@@ -143,20 +135,9 @@ def open_browser(port):
     """
     webbrowser.open_new(f"http://127.0.0.1:{port}/")
 
-def shutdown(port):
-    """
-    Shutdown the Flask server when the application is closed
-    """
-    try:
-        requests.post(f"http://127.0.0.1:{port}/shutdown")
-    except requests.exceptions.RequestException:
-        pass
-
 if __name__ == "__main__":
     reset_heartbeat_timer()
     port = 8050
     Timer(1, open_browser, args=[port]).start()
-    try:
-        socketio.run(server, port=8050, allow_unsafe_werkzeug=True, debug=False)
-    finally:
-        shutdown(port)
+    # Resource cleanup on exit is handled by the atexit-registered clean_up().
+    socketio.run(server, port=port, allow_unsafe_werkzeug=True, debug=False)

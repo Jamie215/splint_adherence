@@ -64,19 +64,44 @@ def baseline_asls(y, lam=1e6, p=0.4, niter=20):
 
     return z
 
+def _infer_interval_minutes(time_series, default=5.0):
+    """
+    Infer the sampling interval (in minutes) from the timestamps.
+
+    The device's wakeup_interval is configurable, so detection windows must be
+    derived from the actual cadence rather than assuming a fixed 5-minute one.
+    Falls back to `default` if it can't be determined.
+    """
+    if len(time_series) < 2:
+        return default
+    diffs = pd.to_datetime(time_series).diff().dt.total_seconds().dropna()
+    diffs = diffs[diffs > 0]
+    if diffs.empty:
+        return default
+    return diffs.median() / 60.0
+
 def detect_onsets_offsets(time_series, temp_series, prox_series):
     """
-    Advanced detection using a 15-minute trend filter to prevent false triggers 
+    Advanced detection using a ~15-minute trend filter to prevent false triggers
     on cooling slopes, and relative peak drops for faster offset detection.
+
+    Window sizes are expressed in wall-clock time and converted to a number of
+    samples using the inferred sampling interval, so the detector behaves the
+    same regardless of the configured wakeup interval.
     """
     # 1. Pre-processing
-    # 12-hour window for stable ambient floor (288 samples @ 5min/sample)
-    baseline = temp_series.rolling(window=24, min_periods=1, center=True).min()
+    interval_min = _infer_interval_minutes(time_series)
+    # ~2-hour window for a stable ambient floor.
+    baseline_window = max(1, round(120 / interval_min))
+    # ~15-minute trend lookback.
+    trend_lag = max(1, round(15 / interval_min))
+
+    baseline = temp_series.rolling(window=baseline_window, min_periods=1, center=True).min()
     delta = temp_series - baseline
     gradient = temp_series.diff()
-    
-    # 15-minute Trend: Temperature difference compared to 3 samples ago
-    trend_15m = temp_series - temp_series.shift(3)
+
+    # ~15-minute trend: temperature difference compared to `trend_lag` samples ago
+    trend = temp_series - temp_series.shift(trend_lag)
 
     # Thresholds
     ONSET_DELTA = 3.0      # Minimum heat above ambient to consider human
@@ -90,13 +115,13 @@ def detect_onsets_offsets(time_series, temp_series, prox_series):
     onset_idx = None
     current_max_delta = 0
 
-    for i in range(3, len(delta)):
+    for i in range(trend_lag, len(delta)):
         if not in_event:
             # ONSET CONDITIONS:
             # 1. Proximity is 0 (something is covering the sensor)
             # 2. Trend is POSITIVE (removes noise on cooling slopes)
             # 3. Thermal Spike (Grad >= 0.8) OR Significant Heat (Delta >= 3.0)
-            is_trending_up = trend_15m[i] > 0
+            is_trending_up = trend[i] > 0
             
             if prox_series[i] == 0 and is_trending_up:
                 if gradient[i] >= ONSET_GRAD or delta[i] >= ONSET_DELTA:
@@ -154,10 +179,13 @@ def extract_peaks(time_series, temp_series, events_df):
 def prepare_gantt(onset_times, offset_times):
     split_rows = []
 
-    for i in range(len(onset_times)):
-        start = pd.to_datetime(onset_times[i])
-        end = pd.to_datetime(offset_times[i])
-        
+    # Iterate by value rather than positional/label index: the incoming Series
+    # may carry a non-sequential index (e.g. after a sort), so onset_times[i]
+    # would be unreliable.
+    for onset, offset in zip(onset_times, offset_times):
+        start = pd.to_datetime(onset)
+        end = pd.to_datetime(offset)
+
         current = start
         while current.date() <= end.date():
             this_date = current.date()
@@ -183,8 +211,8 @@ def prepare_gantt(onset_times, offset_times):
                 'Date': str(this_date),
                 'StartHour': start_hr,
                 'EndHour': end_hr,
-                'Start': onset_times[i],
-                'End': offset_times[i]
+                'Start': onset,
+                'End': offset
             })
 
             current += pd.Timedelta(days=1)

@@ -1,11 +1,11 @@
-import pandas as pd
+import io
 import json
+
+import pandas as pd
 
 from dash import dcc, html
 from dash.dependencies import Input, Output, State
-import dash_bootstrap_components as dbc
 from dash.dash_table import DataTable
-import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
@@ -13,6 +13,71 @@ import numpy as np
 
 from app_instance import app
 import pages.analysis_helper as analysis_helper
+
+
+def build_combined_figure(df, baseline, delta):
+    """
+    Build the combined temperature/proximity/baseline/delta figure shared by
+    both the "events detected" and "no events" code paths.
+    """
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    fig.add_trace(
+        go.Scatter(
+            x=df['Timestamp'],
+            y=df['ProximityVal'],
+            name="Proximity Value",
+            line=dict(color="red", dash='dot')
+        ),
+        secondary_y=True
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df['Timestamp'],
+            y=df['Temperature'],
+            name="Temperature (°C)",
+            line=dict(color="black")
+        ),
+        secondary_y=False
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df['Timestamp'],
+            y=baseline,
+            name="Rolling Min Baseline",
+            line=dict(color="blue", dash='dot')
+        ),
+        secondary_y=False
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df['Timestamp'],
+            y=delta,
+            name="Delta",
+            line=dict(color="green", dash='dot')
+        ),
+        secondary_y=False
+    )
+
+    fig.update_xaxes(title_text="Time")
+    fig.update_yaxes(title_text="Proximity Value", secondary_y=True, color='red')
+    fig.update_yaxes(title_text="Temperature (°C)", secondary_y=False)
+    fig.update_layout(
+        title="Temperature and Proximity Value Over Time",
+        hovermode="x unified",
+        plot_bgcolor='rgba(240, 240, 240, 0.5)',
+        paper_bgcolor='rgba(0, 0, 0, 0)',
+        font=dict(color='#2c3e50'),
+        margin=dict(t=60),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.25,
+            xanchor="center",
+            x=0.5
+        )
+    )
+    return fig
+
 
 # Define app layout with styling
 data_analysis_layout = html.Div([
@@ -130,23 +195,21 @@ def update_dashboard(json_data):
             html.H6("Upload the file to generate the analysis view.", style={"textAlign":"center"})
         ])]
     try:
-        df = pd.read_json(json_data, orient='split')
+        df = pd.read_json(io.StringIO(json_data), orient='split')
         df['Timestamp'] = pd.to_datetime(df['Timestamp'])
         df['Temperature'] = pd.to_numeric(df['Temperature'])
-        df['ProximityVal'] = pd.to_numeric(df['ProximityVal'])
-        df = df.reset_index(drop=True)
-
-    except Exception as e:
-        print(e)
-        # Compatibility with older version data
-        if 'proximity' in str(e).lower():
-            df['ProximityVal'] = np.zeros(len(df))
+        # Older-version datasets have no ProximityVal column; default it to 0.
+        if 'ProximityVal' in df.columns:
+            df['ProximityVal'] = pd.to_numeric(df['ProximityVal'])
         else:
-            return [html.Div([
-                html.H4('Error', style={'color': 'red'}),
-                html.P(str(e))
-            ])]
-        
+            df['ProximityVal'] = np.zeros(len(df))
+        df = df.reset_index(drop=True)
+    except Exception as e:
+        return [html.Div([
+            html.H4('Error', style={'color': 'red'}),
+            html.P(str(e))
+        ])]
+
     time_col = df["Timestamp"]
     temp_col = df["Temperature"]
     prox_col = df['ProximityVal']
@@ -157,70 +220,12 @@ def update_dashboard(json_data):
     try:
         # Find onsets and offsets event and their peaks
         baseline, delta, events_df = analysis_helper.detect_onsets_offsets(time_col, temp_col, prox_col)
-        print("events_df: ", events_df)
 
         # No peak detected
         if events_df.empty:
             # No events detected - create basic plots without peak annotations
-            combined_fig = make_subplots(specs=[[{"secondary_y": True}]])
-            combined_fig.add_trace(
-                go.Scatter(
-                    x=df['Timestamp'],
-                    y=prox_col,
-                    name="Proximity Value",
-                    line=dict(color="red", dash='dot')
-                ),
-                secondary_y=True
-            )
-            combined_fig.add_trace(
-                go.Scatter(
-                    x=df["Timestamp"],
-                    y=df["Temperature"],
-                    name="Temperature (°C)",
-                    line=dict(color="black")
-                ),
-                secondary_y=False
-            )
-            combined_fig.add_trace(
-                go.Scatter(
-                    x=df["Timestamp"],
-                    y=baseline,
-                    name="Rolling Min Baseline",
-                    line=dict(color="black", dash='dot')
-                ),
-                secondary_y=False
-            )
-            combined_fig.add_trace(
-                go.Scatter(
-                    x=df["Timestamp"],
-                    y=delta,
-                    name="Delta",
-                    line=dict(color="black", dash='dash')
-                ),
-                secondary_y=False
-            )
+            combined_fig = build_combined_figure(df, baseline, delta)
 
-            combined_fig.update_xaxes(title_text="Time")
-            combined_fig.update_yaxes(title_text="Proximity Value", secondary_y=True, color='red')
-            combined_fig.update_yaxes(title_text="Temperature (°C)", secondary_y=False)
-
-            # Optional: Update layout
-            combined_fig.update_layout(
-                title="Temperature and Proximity Value Over Time",
-                hovermode="x unified",
-                plot_bgcolor='rgba(240, 240, 240, 0.5)',
-                paper_bgcolor='rgba(0, 0, 0, 0)',
-                font=dict(color='#2c3e50'),
-                margin=dict(t=60),
-                legend=dict(
-                    orientation="h",
-                    yanchor="bottom",
-                    y=-0.25,
-                    xanchor="center",
-                    x=0.5
-                )
-            )
-            
             return [html.Div([
                 html.Hr(style={'margin': '20px 0'}),
                 html.H4('Data Analysis', style={'marginTop': '30px'}),
@@ -247,67 +252,10 @@ def update_dashboard(json_data):
                         "DurationMin": "Duration (Min)",
                         "PeakTemp": "Peak Temperature (°C)"
                     })
-        )
-        print("peak_events_df: ", peak_events_df)
-
-        combined_fig = make_subplots(specs=[[{"secondary_y": True}]])
-        combined_fig.add_trace(
-            go.Scatter(
-                x=df['Timestamp'],
-                y=prox_col,
-                name="Proximity Value",
-                line=dict(color="red", dash='dot')
-            ),
-            secondary_y=True
-        )
-        combined_fig.add_trace(
-            go.Scatter(
-                x=df["Timestamp"],
-                y=df["Temperature"],
-                name="Temperature (°C)",
-                line=dict(color="black")
-            ),
-            secondary_y=False
-        )
-        combined_fig.add_trace(
-                go.Scatter(
-                    x=df["Timestamp"],
-                    y=baseline,
-                    name="Rolling Min Baseline",
-                    line=dict(color="blue", dash='dot')
-                ),
-                secondary_y=False
-            )
-        combined_fig.add_trace(
-            go.Scatter(
-                x=df["Timestamp"],
-                y=delta,
-                name="Delta",
-                line=dict(color="green", dash='dot')
-            ),
-            secondary_y=False
+                    .reset_index(drop=True)
         )
 
-        combined_fig.update_xaxes(title_text="Time")
-        combined_fig.update_yaxes(title_text="Proximity Value", secondary_y=True, color='red')
-        combined_fig.update_yaxes(title_text="Temperature (°C)", secondary_y=False)
-
-        # Optional: Update layout
-        combined_fig.update_layout(
-            title="Temperature and Proximity Value Over Time",
-            hovermode="x unified",
-            plot_bgcolor='rgba(240, 240, 240, 0.5)',
-            paper_bgcolor='rgba(0, 0, 0, 0)',
-            font=dict(color='#2c3e50'),
-            margin=dict(t=60),
-            legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=-0.25,
-                xanchor="center",
-                x=0.5
-            )
-        )
+        combined_fig = build_combined_figure(df, baseline, delta)
         for _, row in peak_events_df.iterrows():
             combined_fig.add_vrect(x0=row['Start'], x1=row['End'],
                               fillcolor="LightGreen", opacity=0.3,

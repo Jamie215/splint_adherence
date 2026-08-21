@@ -3,7 +3,6 @@ Import Libraries
 """
 import datetime
 import json
-import os
 
 import pytz
 from dash import dcc, html, Input, Output, State, callback_context
@@ -357,8 +356,10 @@ def register_index_callbacks():
 
                 # Type 5: "Initialize" button triggered
                 if triggered_id == "initialize-btn":
-                    # Validate inputs
-                    if not all([date, hour, minute, personal_id]):
+                    # Validate inputs. Note: hour, minute and personal_id can
+                    # legitimately be 0 (midnight, minute 0, ID 0), which are
+                    # falsy, so check explicitly for None rather than truthiness.
+                    if any(v is None for v in (date, hour, minute, personal_id)):
                         updated_children = [curr_children[0]]
                         updated_children.extend(set_modal_content(error="Please complete all fields."))
                         return True, updated_children, json.dumps({"is_open": True})
