@@ -123,9 +123,8 @@ def clean_up():
     Clean up existing resources
     """
     print("Cleaning up")
-    if hasattr(arduino, "arduino_serial"):
-        arduino.disconnect_arduino()
-        print("Arduino serial connection closed")
+    arduino.client.disconnect()
+    print("Arduino serial connection closed")
 
 atexit.register(clean_up)
 

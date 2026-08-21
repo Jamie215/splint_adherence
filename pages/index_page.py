@@ -334,8 +334,8 @@ def register_index_callbacks():
 
                 # Type 4: "Connect" button triggered ("Initialize", "Download")
                 if triggered_id == "connect-modal":
-                    arduino_status = arduino.get_device_status()
-                    if arduino.arduino_serial:
+                    arduino_status = arduino.client.get_status()
+                    if arduino.client.is_connected:
                         if "Initialize Arduino" in str(curr_children):
                             if arduino_status in [b"NEED_CONFIGURATION", b"HAS_DATA"]:
                                 updated_children = [curr_children[0]]
@@ -374,7 +374,7 @@ def register_index_callbacks():
                     epoch_time = int(selected_datetime.astimezone(pytz.utc).timestamp())
                     
                     # Send initialization command to Arduino
-                    arduino.initialize_arduino(epoch_time, int(personal_id))
+                    arduino.client.initialize(epoch_time, int(personal_id))
 
                     formatted_dt = selected_datetime.strftime("%A, %B %d at %I:%M %p")
                     updated_children = [curr_children[0]]
@@ -434,7 +434,7 @@ def register_index_callbacks():
                 return (None, {"bordercolor": "red", "boxShadow": "0 0 0 0.25rem rgb(255 0 0 / 25%)"}, file_status, False)
 
             filename = f"{filename}.csv"
-            file_content = arduino.download_file(filename)
+            file_content = arduino.client.download(filename)
 
             # Update the file download status
             file_status = html.Div("Download Complete", style={"color": "mediumseagreen"})
@@ -469,6 +469,6 @@ def register_index_callbacks():
         data = json.loads(json_data)
 
         if data and not data["is_open"]:
-            arduino.disconnect_arduino()
+            arduino.client.disconnect()
             print("Arduino serial connection disconnected")
         return None
