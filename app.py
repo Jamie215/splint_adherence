@@ -21,6 +21,14 @@ from pages.data_analysis_page import data_analysis_layout
 from pages.index_page import index_layout, register_index_callbacks
 import arduino
 
+# Configure application-wide logging. Without this, the logging.info(...) calls
+# below (and in the other modules) would not emit anything.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
+
 # Register all index page callbacks before app runs
 register_index_callbacks()
 
@@ -98,7 +106,7 @@ def timeout():
     """
     Navigate to timeout page
     """
-    print("Session has timed out")
+    logger.info("Session has timed out")
     return render_template_string("""
             <html>
                 <head><title>Server Terminated</title></head>
@@ -122,9 +130,9 @@ def clean_up():
     """
     Clean up existing resources
     """
-    print("Cleaning up")
+    logger.info("Cleaning up")
     arduino.client.disconnect()
-    print("Arduino serial connection closed")
+    logger.info("Arduino serial connection closed")
 
 atexit.register(clean_up)
 

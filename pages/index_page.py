@@ -3,6 +3,7 @@ Import Libraries
 """
 import datetime
 import json
+import logging
 
 import pytz
 from dash import dcc, html, Input, Output, State, callback_context
@@ -11,6 +12,8 @@ import dash_bootstrap_components as dbc
 
 from app_instance import app
 import arduino
+
+logger = logging.getLogger(__name__)
 
 def set_modal_content(initialize=False, selected_dt=None, download=False, error=None, footer_view="None"):
     """
@@ -382,7 +385,7 @@ def register_index_callbacks():
                     return True, updated_children, json.dumps({"is_open": True})
 
             except Exception as e:
-                print(f"Following exception triggered: {e}")
+                logger.exception("Exception while handling modal action")
                 updated_children = [curr_children[0]]
                 updated_children.extend(set_modal_content(error=str(e)))
                 return True, updated_children, json.dumps({"is_open": True})
@@ -470,5 +473,5 @@ def register_index_callbacks():
 
         if data and not data["is_open"]:
             arduino.client.disconnect()
-            print("Arduino serial connection disconnected")
+            logger.info("Arduino serial connection disconnected")
         return None

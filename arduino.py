@@ -1,11 +1,14 @@
 import io
 import time
 import datetime
+import logging
 import struct
 from typing import Optional, Dict, Any, Tuple, Union
 
 import serial
 import serial.tools.list_ports
+
+logger = logging.getLogger(__name__)
 
 # Constants for serial communication
 BAUD_RATE = 115200
@@ -56,7 +59,7 @@ class ArduinoClient:
                 response = ser.readline().strip()
 
                 if response == b"Hello World!":
-                    print(f"Arduino found on port {port}")
+                    logger.info(f"Arduino found on port {port}")
                     return ser
 
                 # Not a recognized device, close and try next port
@@ -112,11 +115,11 @@ class ArduinoClient:
             if not response:
                 return b"ERROR"
 
-            print(f"Status response: {response}")
+            logger.info(f"Status response: {response}")
             return response
 
         except Exception as e:
-            print(f"Error getting status: {e}")
+            logger.error(f"Error getting status: {e}")
             # If error occurs, drop the connection so the next call reconnects
             self.disconnect()
             return b"ERROR"
@@ -134,7 +137,7 @@ class ArduinoClient:
 
         # Check for timestamp overflow and warn
         if epoch_time >= 2**32:
-            print("Warning: Timestamp exceeds 32-bit limit, will be truncated on device")
+            logger.warning("Timestamp exceeds 32-bit limit, will be truncated on device")
 
         success, message = self._ensure_connected()
         if not success:
@@ -146,7 +149,7 @@ class ArduinoClient:
             self._serial.write(b"i")
             time.sleep(0.5)
             response = self._serial.readline().strip()
-            print(f"Initialization response: {response}")
+            logger.info(f"Initialization response: {response}")
 
             if response != b"READY_FOR_INIT":
                 return False, f"Unexpected response: {response}"
@@ -184,7 +187,7 @@ class ArduinoClient:
                 if self._serial.in_waiting:
                     response = self._serial.readline().strip()
                     if response:
-                        print(f"Final response: {response}")
+                        logger.info(f"Final response: {response}")
                         break
                 time.sleep(0.1)
             # Delay to wait for Arduino to be SystemOFF
@@ -281,7 +284,7 @@ class ArduinoClient:
                 'type': 'text/csv'
             }
         except Exception as e:
-            print(f"Error downloading file: {e}")
+            logger.error(f"Error downloading file: {e}")
             raise Exception(f"Failed to download data: {str(e)}")
         finally:
             # Restore original timeout
@@ -314,7 +317,7 @@ class ArduinoClient:
                 line_str = line.decode('utf-8').strip()
             except UnicodeDecodeError:
                 # Skip lines that can't be decoded properly
-                print(f"Warning: Skipping non-UTF-8 line of length {len(line)}")
+                logger.warning(f"Skipping non-UTF-8 line of length {len(line)}")
                 continue
 
             # Process the line according to state
@@ -352,7 +355,7 @@ class ArduinoClient:
                         output.write(f"{iso_time},{parts[1]},{parts[2]}\r\n")
                     except (ValueError, OverflowError) as e:
                         # Handle invalid timestamps
-                        print(f"Warning: Invalid timestamp {parts[0]}: {e}")
+                        logger.warning(f"Invalid timestamp {parts[0]}: {e}")
                         output.write(f"{line_str}\r\n")
                 else:
                     # Non-data line in data section
@@ -364,7 +367,7 @@ class ArduinoClient:
         """Disconnect from the Arduino device."""
         if self.is_connected:
             self._serial.close()
-            print("Arduino disconnected successfully")
+            logger.info("Arduino disconnected successfully")
         self._serial = None
 
 
