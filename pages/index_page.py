@@ -3,7 +3,7 @@ Import Libraries
 """
 import datetime
 import json
-import os
+import logging
 
 import pytz
 from dash import dcc, html, Input, Output, State, callback_context
@@ -12,6 +12,8 @@ import dash_bootstrap_components as dbc
 
 from app_instance import app
 import arduino
+
+logger = logging.getLogger(__name__)
 
 def set_modal_content(initialize=False, selected_dt=None, download=False, error=None, footer_view="None"):
     """
@@ -335,8 +337,8 @@ def register_index_callbacks():
 
                 # Type 4: "Connect" button triggered ("Initialize", "Download")
                 if triggered_id == "connect-modal":
-                    arduino_status = arduino.get_device_status()
-                    if arduino.arduino_serial:
+                    arduino_status = arduino.client.get_status()
+                    if arduino.client.is_connected:
                         if "Initialize Arduino" in str(curr_children):
                             if arduino_status in [b"NEED_CONFIGURATION", b"HAS_DATA"]:
                                 updated_children = [curr_children[0]]
@@ -357,8 +359,10 @@ def register_index_callbacks():
 
                 # Type 5: "Initialize" button triggered
                 if triggered_id == "initialize-btn":
-                    # Validate inputs
-                    if not all([date, hour, minute, personal_id]):
+                    # Validate inputs. Note: hour, minute and personal_id can
+                    # legitimately be 0 (midnight, minute 0, ID 0), which are
+                    # falsy, so check explicitly for None rather than truthiness.
+                    if any(v is None for v in (date, hour, minute, personal_id)):
                         updated_children = [curr_children[0]]
                         updated_children.extend(set_modal_content(error="Please complete all fields."))
                         return True, updated_children, json.dumps({"is_open": True})
@@ -373,7 +377,7 @@ def register_index_callbacks():
                     epoch_time = int(selected_datetime.astimezone(pytz.utc).timestamp())
                     
                     # Send initialization command to Arduino
-                    arduino.initialize_arduino(epoch_time, int(personal_id))
+                    arduino.client.initialize(epoch_time, int(personal_id))
 
                     formatted_dt = selected_datetime.strftime("%A, %B %d at %I:%M %p")
                     updated_children = [curr_children[0]]
@@ -381,7 +385,7 @@ def register_index_callbacks():
                     return True, updated_children, json.dumps({"is_open": True})
 
             except Exception as e:
-                print(f"Following exception triggered: {e}")
+                logger.exception("Exception while handling modal action")
                 updated_children = [curr_children[0]]
                 updated_children.extend(set_modal_content(error=str(e)))
                 return True, updated_children, json.dumps({"is_open": True})
@@ -433,7 +437,7 @@ def register_index_callbacks():
                 return (None, {"bordercolor": "red", "boxShadow": "0 0 0 0.25rem rgb(255 0 0 / 25%)"}, file_status, False)
 
             filename = f"{filename}.csv"
-            file_content = arduino.download_file(filename)
+            file_content = arduino.client.download(filename)
 
             # Update the file download status
             file_status = html.Div("Download Complete", style={"color": "mediumseagreen"})
@@ -468,6 +472,6 @@ def register_index_callbacks():
         data = json.loads(json_data)
 
         if data and not data["is_open"]:
-            arduino.disconnect_arduino()
-            print("Arduino serial connection disconnected")
+            arduino.client.disconnect()
+            logger.info("Arduino serial connection disconnected")
         return None

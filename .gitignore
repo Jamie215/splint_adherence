@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# Build artifacts (cx_Freeze)
+build/
+Splint_Adherence/
+
+# Environments
+.venv/
+venv/
+env/
+
+# OS / editor
+.DS_Store
