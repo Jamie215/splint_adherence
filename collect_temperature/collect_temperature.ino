@@ -54,23 +54,11 @@ FlashIAP flash;
 
 #define SERIAL_BAUD_RATE 9600
 
-// APDS9960 proximity configuration (direct register access via Wire).
-// Programmed explicitly on every sample so each reading is taken under
-// identical, settled conditions instead of whatever the library last left the
-// sensor in -- the main firmware lever against long-term baseline drift.
-#define APDS9960_I2C_ADDR        0x39
-#define APDS9960_REG_PPULSE      0x8E   // Proximity pulse length/count
-#define APDS9960_REG_CONTROL     0x8F   // LED drive / proximity gain / ALS gain
-#define APDS9960_REG_POFFSET_UR  0x9D   // Proximity offset, up/right diodes
-#define APDS9960_REG_POFFSET_DL  0x9E   // Proximity offset, down/left diodes
-// CONTROL: LDRIVE=00 (100 mA, full drive), PGAIN=10 (4x), AGAIN=00 -> 0x08.
-// LED drive is left at full here so proximity magnitudes match the previous
-// firmware; reducing it is a self-heating/power change for a later step.
-#define APDS9960_CONTROL_VALUE   0x08
-// PPULSE: PPLEN=01 (8 us pulses), PPULSE=7 (8 pulses) -> 0x47.
-#define APDS9960_PPULSE_VALUE    0x47
-// Proximity samples discarded before the kept reading, to let the front end settle.
-#define PROX_WARMUP_SAMPLES      2
+// DIAGNOSTIC SWITCH. Set to 1 to build an observable logging mode: USB/serial is
+// kept alive during logging and each cycle prints what the sensors did, and the
+// proximity wait times out instead of hanging. Set back to 0 for normal
+// low-power deployment behavior before shipping.
+#define DEBUG_LOGGING 1
 
 // Function declarations
 bool saveConfig();
@@ -79,8 +67,6 @@ bool initializeDevice(const uint8_t* packedData);
 uint32_t findHighestDataIndex();
 void sendReadableData();
 void processSerialCommand();
-void configureAPDS();
-uint8_t readProximityWarmed();
 
 bool saveConfig() {
     int result = flash.erase(CONFIG_ADDRESS, FLASH_PAGE_SIZE);
@@ -318,7 +304,8 @@ void setup() {
         config.mode = MODE_LOGGING;
         saveConfig();
 
-        // Power saving configurations
+#if !DEBUG_LOGGING
+        // Power saving configurations (skipped in DEBUG so USB/serial survive).
         NRF_USBD->ENABLE = 0;
         NRF_CLOCK->TASKS_HFCLKSTOP = 1;
         NRF_SAADC->ENABLE = 0;
@@ -327,15 +314,19 @@ void setup() {
         NRF_PWM2->ENABLE = 0;
         NRF_PDM->ENABLE = 0;
         NRF_I2S->ENABLE = 0;
-        NRF_SPI0->ENABLE = 0;
-        NRF_SPI1->ENABLE = 0;
+        // FIX UNDER TEST: on the nRF52840, SPI0/SPI1 share silicon with the
+        // TWI0/TWI1 (I2C) controllers the sensors use. Disabling them here can
+        // kill the I2C bus in logging mode, so the proximity read never
+        // completes. Leave them enabled.
+        // NRF_SPI0->ENABLE = 0;
+        // NRF_SPI1->ENABLE = 0;
         NRF_UART0->TASKS_STOPTX = 1;
         NRF_UART0->TASKS_STOPRX = 1;
         NRF_UART0->ENABLE = 0;
         NRF_UARTE1->TASKS_STOPTX = 1;
         NRF_UARTE1->TASKS_STOPRX = 1;
         NRF_UARTE1->ENABLE = 0;
-        NRF_RADIO->POWER = 0; 
+        NRF_RADIO->POWER = 0;
         NRF_QDEC->ENABLE = 0;
         NRF_COMP->ENABLE = 0;
         NRF_POWER->DCDCEN = 1;
@@ -343,6 +334,7 @@ void setup() {
         *(volatile uint32_t *)0x40002FFC = 0;
         *(volatile uint32_t *)0x40002FFC;
         *(volatile uint32_t *)0x40002FFC = 1;
+#endif
 
         digitalWrite(LEDR, HIGH);
         digitalWrite(LEDG, HIGH);
@@ -369,38 +361,13 @@ void setup() {
         digitalWrite(LEDB, HIGH);
         Serial.println("Ready for Connection");
     } else {
+#if !DEBUG_LOGGING
         Serial.end();
+#else
+        Serial.println("DEBUG: entering logging mode (serial kept alive)");
+#endif
         startMillis = millis();  // Initialize timing reference
     }
-}
-
-static void writeAPDS(uint8_t reg, uint8_t value) {
-    Wire.beginTransmission(APDS9960_I2C_ADDR);
-    Wire.write(reg);
-    Wire.write(value);
-    Wire.endTransmission();
-}
-
-// Program the proximity engine to a fixed, known configuration. Call after
-// APDS.begin() (which powers the sensor on) so the writes take effect.
-void configureAPDS() {
-    writeAPDS(APDS9960_REG_CONTROL, APDS9960_CONTROL_VALUE);
-    writeAPDS(APDS9960_REG_PPULSE, APDS9960_PPULSE_VALUE);
-    writeAPDS(APDS9960_REG_POFFSET_UR, 0x00);
-    writeAPDS(APDS9960_REG_POFFSET_DL, 0x00);
-}
-
-// Read proximity after discarding a few warm-up samples so the value reflects a
-// settled front end. Keeps the original blocking availability wait.
-uint8_t readProximityWarmed() {
-    for (int i = 0; i <= PROX_WARMUP_SAMPLES; i++) {
-        while (!APDS.proximityAvailable()) {}
-        int raw = APDS.readProximity();
-        if (i == PROX_WARMUP_SAMPLES) {
-            return (uint8_t)(raw & 0xFF);
-        }
-    }
-    return 0;
 }
 
 void loop() {
@@ -416,14 +383,41 @@ void loop() {
             uint32_t elapsedSeconds = (millis() - startMillis) / 1000;
             
             // Initialize sensors
-            APDS.begin();
-            configureAPDS();          // fixed, known proximity config each cycle
-            HS300x.begin();
+            int apdsOk = APDS.begin();
+            int hsOk = HS300x.begin();
             delay(50);
 
-            // Read sensors (proximity after warm-up discard for a settled value)
-            uint8_t proximityVal = readProximityWarmed();
+            // Bounded wait for the proximity sensor so a stuck/absent sensor
+            // reports a timeout instead of hanging the whole logger forever.
+            bool proxReady = false;
+            unsigned long proxWaitStart = millis();
+            while (millis() - proxWaitStart < 1000) {
+                if (APDS.proximityAvailable()) {
+                    proxReady = true;
+                    break;
+                }
+            }
+
+            // Read sensors (0 proximity on timeout = benign "far / not covered")
+            int rawProximity = proxReady ? APDS.readProximity() : 0;
+            uint8_t proximityVal = (uint8_t)(rawProximity & 0xFF);  // Ensure 0-255 range
             float temperature = HS300x.readTemperature();
+
+#if DEBUG_LOGGING
+            Serial.print("DEBUG cycle: APDS.begin=");
+            Serial.print(apdsOk);
+            Serial.print(" HS300x.begin=");
+            Serial.print(hsOk);
+            Serial.print(" proxReady=");
+            Serial.print(proxReady);
+            Serial.print(" prox=");
+            Serial.print(rawProximity);
+            Serial.print(" temp=");
+            Serial.println(temperature, 2);
+#else
+            (void)apdsOk;
+            (void)hsOk;
+#endif
 
             // Save reading with actual elapsed time
             if (!saveTemperatureReading(temperature, proximityVal, elapsedSeconds)) {
