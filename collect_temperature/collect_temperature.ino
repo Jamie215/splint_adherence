@@ -56,9 +56,9 @@ FlashIAP flash;
 
 // DIAGNOSTIC SWITCH. Set to 1 to build an observable logging mode: USB/serial is
 // kept alive during logging and each cycle prints what the sensors did, and the
-// proximity wait times out instead of hanging. Set back to 0 for normal
-// low-power deployment behavior before shipping.
-#define DEBUG_LOGGING 1
+// proximity wait times out instead of hanging. Keep at 0 for normal low-power
+// deployment; flip to 1 only for bench debugging.
+#define DEBUG_LOGGING 0
 
 // Function declarations
 bool saveConfig();
@@ -314,10 +314,10 @@ void setup() {
         NRF_PWM2->ENABLE = 0;
         NRF_PDM->ENABLE = 0;
         NRF_I2S->ENABLE = 0;
-        // FIX UNDER TEST: on the nRF52840, SPI0/SPI1 share silicon with the
-        // TWI0/TWI1 (I2C) controllers the sensors use. Disabling them here can
-        // kill the I2C bus in logging mode, so the proximity read never
-        // completes. Leave them enabled.
+        // Do NOT disable SPI0/SPI1 here. On the nRF52840 they share silicon
+        // with the TWI0/TWI1 (I2C) controllers the APDS9960/HS300x sensors use;
+        // disabling them killed the I2C bus in logging mode, hanging the
+        // proximity read so nothing was ever logged. Confirmed on hardware.
         // NRF_SPI0->ENABLE = 0;
         // NRF_SPI1->ENABLE = 0;
         NRF_UART0->TASKS_STOPTX = 1;
