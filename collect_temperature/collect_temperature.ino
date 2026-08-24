@@ -54,6 +54,24 @@ FlashIAP flash;
 
 #define SERIAL_BAUD_RATE 9600
 
+// APDS9960 proximity configuration (direct register access via Wire).
+// Programmed explicitly on every sample so each reading is taken under
+// identical, settled conditions instead of whatever the library last left the
+// sensor in -- the main firmware lever against long-term baseline drift.
+#define APDS9960_I2C_ADDR        0x39
+#define APDS9960_REG_PPULSE      0x8E   // Proximity pulse length/count
+#define APDS9960_REG_CONTROL     0x8F   // LED drive / proximity gain / ALS gain
+#define APDS9960_REG_POFFSET_UR  0x9D   // Proximity offset, up/right diodes
+#define APDS9960_REG_POFFSET_DL  0x9E   // Proximity offset, down/left diodes
+// CONTROL: LDRIVE=00 (100 mA, full drive), PGAIN=10 (4x), AGAIN=00 -> 0x08.
+// LED drive is left at full here so proximity magnitudes match the previous
+// firmware; reducing it is a self-heating/power change for a later step.
+#define APDS9960_CONTROL_VALUE   0x08
+// PPULSE: PPLEN=01 (8 us pulses), PPULSE=7 (8 pulses) -> 0x47.
+#define APDS9960_PPULSE_VALUE    0x47
+// Proximity samples discarded before the kept reading, to let the front end settle.
+#define PROX_WARMUP_SAMPLES      2
+
 // Function declarations
 bool saveConfig();
 bool saveTemperatureReading(float temperature, uint8_t proximityVal, uint32_t elapsedSeconds);
@@ -61,6 +79,8 @@ bool initializeDevice(const uint8_t* packedData);
 uint32_t findHighestDataIndex();
 void sendReadableData();
 void processSerialCommand();
+void configureAPDS();
+uint8_t readProximityWarmed();
 
 bool saveConfig() {
     int result = flash.erase(CONFIG_ADDRESS, FLASH_PAGE_SIZE);
@@ -354,6 +374,35 @@ void setup() {
     }
 }
 
+static void writeAPDS(uint8_t reg, uint8_t value) {
+    Wire.beginTransmission(APDS9960_I2C_ADDR);
+    Wire.write(reg);
+    Wire.write(value);
+    Wire.endTransmission();
+}
+
+// Program the proximity engine to a fixed, known configuration. Call after
+// APDS.begin() (which powers the sensor on) so the writes take effect.
+void configureAPDS() {
+    writeAPDS(APDS9960_REG_CONTROL, APDS9960_CONTROL_VALUE);
+    writeAPDS(APDS9960_REG_PPULSE, APDS9960_PPULSE_VALUE);
+    writeAPDS(APDS9960_REG_POFFSET_UR, 0x00);
+    writeAPDS(APDS9960_REG_POFFSET_DL, 0x00);
+}
+
+// Read proximity after discarding a few warm-up samples so the value reflects a
+// settled front end. Keeps the original blocking availability wait.
+uint8_t readProximityWarmed() {
+    for (int i = 0; i <= PROX_WARMUP_SAMPLES; i++) {
+        while (!APDS.proximityAvailable()) {}
+        int raw = APDS.readProximity();
+        if (i == PROX_WARMUP_SAMPLES) {
+            return (uint8_t)(raw & 0xFF);
+        }
+    }
+    return 0;
+}
+
 void loop() {
     switch (currentMode) {
         case MODE_LOGGING: {
@@ -368,15 +417,12 @@ void loop() {
             
             // Initialize sensors
             APDS.begin();
+            configureAPDS();          // fixed, known proximity config each cycle
             HS300x.begin();
             delay(50);
 
-            // Wait for proximity sensor
-            while (!APDS.proximityAvailable()) {}
-
-            // Read sensors
-            int rawProximity = APDS.readProximity();
-            uint8_t proximityVal = (uint8_t)(rawProximity & 0xFF);  // Ensure 0-255 range
+            // Read sensors (proximity after warm-up discard for a settled value)
+            uint8_t proximityVal = readProximityWarmed();
             float temperature = HS300x.readTemperature();
 
             // Save reading with actual elapsed time
