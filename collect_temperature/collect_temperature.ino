@@ -60,6 +60,14 @@ FlashIAP flash;
 // deployment; flip to 1 only for bench debugging.
 #define DEBUG_LOGGING 0
 
+// Proximity samples discarded before the kept reading, so the logged value comes
+// from a settled sensor front end rather than the first post-power-on
+// conversion. The sensor config itself is left at the library default (APDS
+// re-initializes on every begin()), so the proximity scale is unchanged.
+#define PROX_WARMUP_SAMPLES   2
+// Per-conversion bounded wait (ms) so a stuck/absent sensor can never hang.
+#define PROX_WAIT_TIMEOUT_MS  1000
+
 // Function declarations
 bool saveConfig();
 bool saveTemperatureReading(float temperature, uint8_t proximityVal, uint32_t elapsedSeconds);
@@ -67,6 +75,7 @@ bool initializeDevice(const uint8_t* packedData);
 uint32_t findHighestDataIndex();
 void sendReadableData();
 void processSerialCommand();
+uint8_t readProximitySettled(bool &ready);
 
 bool saveConfig() {
     int result = flash.erase(CONFIG_ADDRESS, FLASH_PAGE_SIZE);
@@ -370,6 +379,29 @@ void setup() {
     }
 }
 
+// Read proximity after discarding warm-up samples so the kept value comes from a
+// settled front end. Every wait is bounded, so a stuck/absent sensor returns 0
+// (far / not covered) instead of hanging the logger. `ready` reports whether a
+// real reading was obtained.
+uint8_t readProximitySettled(bool &ready) {
+    ready = false;
+    int raw = 0;
+    for (int i = 0; i <= PROX_WARMUP_SAMPLES; i++) {
+        bool got = false;
+        unsigned long start = millis();
+        while (millis() - start < PROX_WAIT_TIMEOUT_MS) {
+            if (APDS.proximityAvailable()) {
+                got = true;
+                break;
+            }
+        }
+        if (!got) return 0;   // timeout on a warm-up sample or the real read
+        raw = APDS.readProximity();
+    }
+    ready = true;
+    return (uint8_t)(raw & 0xFF);
+}
+
 void loop() {
     switch (currentMode) {
         case MODE_LOGGING: {
@@ -387,20 +419,10 @@ void loop() {
             int hsOk = HS300x.begin();
             delay(50);
 
-            // Bounded wait for the proximity sensor so a stuck/absent sensor
-            // reports a timeout instead of hanging the whole logger forever.
+            // Read proximity after a warm-up discard for a settled value; the
+            // read is internally bounded so a stuck/absent sensor can't hang.
             bool proxReady = false;
-            unsigned long proxWaitStart = millis();
-            while (millis() - proxWaitStart < 1000) {
-                if (APDS.proximityAvailable()) {
-                    proxReady = true;
-                    break;
-                }
-            }
-
-            // Read sensors (0 proximity on timeout = benign "far / not covered")
-            int rawProximity = proxReady ? APDS.readProximity() : 0;
-            uint8_t proximityVal = (uint8_t)(rawProximity & 0xFF);  // Ensure 0-255 range
+            uint8_t proximityVal = readProximitySettled(proxReady);
             float temperature = HS300x.readTemperature();
 
 #if DEBUG_LOGGING
@@ -411,7 +433,7 @@ void loop() {
             Serial.print(" proxReady=");
             Serial.print(proxReady);
             Serial.print(" prox=");
-            Serial.print(rawProximity);
+            Serial.print(proximityVal);
             Serial.print(" temp=");
             Serial.println(temperature, 2);
 #else
