@@ -22,32 +22,22 @@ per-day wear totals and an hour-of-day timeline.
    proximity to flash
 ```
 
-The device runs a small state machine. On each power-up it chooses its mode from
-whether a USB host is supplying power (read from the nRF52840's on-chip
-`VBUSDETECT`), not from a persisted flag — a normal USB serial connection does
-not reset this board, so a toggle that only re-evaluated on reset was unreliable:
+The device runs a small state machine. On each power-up it toggles between:
 
-- **On USB → idle mode** – the serial port is active and the device answers
-  commands from the GUI. It never auto-starts logging or disables USB while on a
-  host, so initialization and download are always reachable.
-- **On battery → logging mode** – if the device has been configured, sensors are
-  sampled every `wakeup_interval` seconds and the reading (elapsed time,
-  temperature, proximity) is written to flash. Most peripherals are powered down
-  and the CPU deep-sleeps between samples (on-chip RTC wakeup) to keep current low.
-
-Recorded data is preserved on every idle boot; only the `i` command erases it.
-To download from a device that is already logging, connect it over USB and press
-the reset button once (connecting alone does not reset it) — it then boots idle.
+- **Logging mode** – sensors are sampled every `wakeup_interval` seconds and the
+  reading (elapsed time, temperature, proximity) is written to flash. Most
+  peripherals are powered down between samples to keep sleep current low.
+- **Idle mode** – the serial port is active and the device answers commands from
+  the GUI.
 
 The GUI talks to the device over a simple serial protocol:
 
-| Command | Meaning                                                       |
-| ------- | ------------------------------------------------------------- |
-| `?`     | Handshake — device replies `Hello World!`                     |
-| `!`     | Status — replies `HAS_DATA` or `NEED_CONFIGURATION`           |
-| `i`     | Initialize — receives a packed config + checksum              |
-| `l`     | Start logging now (bench testing over USB; echoes each reading) |
-| `r`     | Read — streams the recorded CSV, ending `END_DATA`            |
+| Command | Meaning                                             |
+| ------- | --------------------------------------------------- |
+| `?`     | Handshake — device replies `Hello World!`           |
+| `!`     | Status — replies `HAS_DATA` or `NEED_CONFIGURATION` |
+| `i`     | Initialize — receives a packed config + checksum    |
+| `r`     | Read — streams the recorded CSV, ending `END_DATA`  |
 
 ## Repository layout
 
@@ -100,8 +90,8 @@ shuts itself down after a short timeout.
 
 1. **Initialize Device** – connect the device over USB, then set the start date,
    time, and a personal ID. The GUI packs this configuration (with a checksum)
-   and sends it to the device. The device stays idle and connected after
-   initializing; unplug it and run it from battery to begin logging.
+   and sends it to the device, which then powers down and begins logging on its
+   next power-up.
 2. **Data Download** – connect a device that has recorded data and enter a
    filename. The recorded readings are streamed back and saved as a CSV, with
    epoch timestamps converted to readable UTC.

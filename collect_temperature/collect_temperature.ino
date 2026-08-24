@@ -49,10 +49,6 @@ ConfigData config = {
 
 uint32_t currentIndex = 0;
 OperationMode currentMode = MODE_IDLE;
-// When true, logging runs in an observable, USB-friendly mode (serial stays up,
-// plain delay() between samples) instead of the low-power deep-sleep path. Used
-// for bench testing while plugged into a host.
-bool benchLogging = false;
 FlashIAP flash;
 
 #define SERIAL_BAUD_RATE 9600
@@ -81,9 +77,6 @@ uint32_t loggingElapsedSeconds();
 void sleepUntilSecond(uint32_t targetSecond);
 void configureAPDS();
 uint8_t readProximityStable();
-bool usbConnected();
-bool isConfigured();
-void enterLowPowerLogging();
 
 bool saveConfig() {
     int result = flash.erase(CONFIG_ADDRESS, FLASH_PAGE_SIZE);
@@ -259,35 +252,17 @@ void processSerialCommand() {
                         }
                     }
 
-                    if (initializeDevice(packedData)) {
-                        // Init runs over USB, where SYSTEMOFF is only emulated
-                        // (and left the board in a confusing state). Stay idle
-                        // and interactive instead; the device begins logging on
-                        // its own when next powered from battery. Unplug to
-                        // deploy.
+                    if (initializeDevice(packedData)) {                        
                         Serial.println("INITIALIZED");
-                        currentMode = MODE_IDLE;
-                        config.mode = MODE_IDLE;
+                        delay(100);
+                        digitalWrite(LED_PWR, LOW);
                         digitalWrite(LEDR, HIGH);
-                        digitalWrite(LEDG, LOW);
+                        digitalWrite(LEDG, HIGH);
                         digitalWrite(LEDB, HIGH);
+                        NRF_POWER->SYSTEMOFF = 1;
                     } else {
                         Serial.println("INIT_FAILED");
                     }
-                }
-                break;
-            case 'l':
-                // Start logging on demand while on USB (bench testing). Keeps
-                // serial alive and prints each reading; does not power down.
-                if (isConfigured()) {
-                    Serial.println("LOGGING_STARTED");
-                    benchLogging = true;
-                    currentMode = MODE_LOGGING;
-                    config.mode = MODE_LOGGING;
-                    digitalWrite(LED_PWR, HIGH);
-                    startLoggingClock();
-                } else {
-                    Serial.println("NEED_CONFIGURATION");
                 }
                 break;
             case 'r':
@@ -412,64 +387,6 @@ uint8_t readProximityStable() {
     return 0;
 }
 
-// ---------------------------------------------------------------------------
-// Boot-mode decision helpers
-//
-// The mode is decided from whether a USB host is supplying power, not from a
-// persisted toggle flag. On the nRF52840 a normal USB-CDC open does not reset
-// the board, so a flip-flop that only re-evaluates in setup() was unreliable
-// and could leave a just-initialized device booting into logging with USB
-// disabled (invisible to the host). VBUSDETECT is on-chip and reflects the
-// cable directly.
-// ---------------------------------------------------------------------------
-bool usbConnected() {
-    return (NRF_POWER->USBREGSTATUS & POWER_USBREGSTATUS_VBUSDETECT_Msk) != 0;
-}
-
-// True once the device has been initialized with a valid config. Blank flash
-// reads back as all-0xFF, so guard against those sentinel values.
-bool isConfigured() {
-    return config.initialTimestamp != 0xFFFFFFFF &&
-           config.wakeupInterval > 0 &&
-           config.wakeupInterval <= 86400UL;   // sane upper bound: <= 1 day
-}
-
-// Power down unused peripherals and hand timing to the RTC clock, then drop
-// serial. Used only for battery (host-less) deployment logging.
-void enterLowPowerLogging() {
-    NRF_USBD->ENABLE = 0;
-    NRF_CLOCK->TASKS_HFCLKSTOP = 1;
-    NRF_SAADC->ENABLE = 0;
-    NRF_PWM0->ENABLE = 0;
-    NRF_PWM1->ENABLE = 0;
-    NRF_PWM2->ENABLE = 0;
-    NRF_PDM->ENABLE = 0;
-    NRF_I2S->ENABLE = 0;
-    NRF_SPI0->ENABLE = 0;
-    NRF_SPI1->ENABLE = 0;
-    NRF_UART0->TASKS_STOPTX = 1;
-    NRF_UART0->TASKS_STOPRX = 1;
-    NRF_UART0->ENABLE = 0;
-    NRF_UARTE1->TASKS_STOPTX = 1;
-    NRF_UARTE1->TASKS_STOPRX = 1;
-    NRF_UARTE1->ENABLE = 0;
-    NRF_RADIO->POWER = 0;
-    NRF_QDEC->ENABLE = 0;
-    NRF_COMP->ENABLE = 0;
-    NRF_POWER->DCDCEN = 1;
-
-    *(volatile uint32_t *)0x40002FFC = 0;
-    *(volatile uint32_t *)0x40002FFC;
-    *(volatile uint32_t *)0x40002FFC = 1;
-
-    digitalWrite(LEDR, HIGH);
-    digitalWrite(LEDG, HIGH);
-    digitalWrite(LEDB, HIGH);
-
-    Serial.end();
-    startLoggingClock();
-}
-
 void setup() {
     Serial.begin(SERIAL_BAUD_RATE);
 
@@ -503,29 +420,62 @@ void setup() {
     
     flash.read(&config, CONFIG_ADDRESS, sizeof(ConfigData));
     currentIndex = findHighestDataIndex();
+    
+    // Mode transitions
+    if (config.mode == MODE_IDLE && currentIndex == 0) {
+        config.mode = MODE_LOGGING;
+        saveConfig();
 
-    // Mode is chosen from USB presence, not a persisted toggle. Recorded data is
-    // preserved on every idle boot; only the 'i' command erases it.
-    if (usbConnected()) {
-        // On a host: stay interactive so init/download/status always work, and
-        // allow bench logging on demand via the 'l' command. Never auto-log or
-        // disable USB here.
-        currentMode = MODE_IDLE;
+        // Power saving configurations
+        NRF_USBD->ENABLE = 0;
+        NRF_CLOCK->TASKS_HFCLKSTOP = 1;
+        NRF_SAADC->ENABLE = 0;
+        NRF_PWM0->ENABLE = 0;
+        NRF_PWM1->ENABLE = 0;
+        NRF_PWM2->ENABLE = 0;
+        NRF_PDM->ENABLE = 0;
+        NRF_I2S->ENABLE = 0;
+        NRF_SPI0->ENABLE = 0;
+        NRF_SPI1->ENABLE = 0;
+        NRF_UART0->TASKS_STOPTX = 1;
+        NRF_UART0->TASKS_STOPRX = 1;
+        NRF_UART0->ENABLE = 0;
+        NRF_UARTE1->TASKS_STOPTX = 1;
+        NRF_UARTE1->TASKS_STOPRX = 1;
+        NRF_UARTE1->ENABLE = 0;
+        NRF_RADIO->POWER = 0; 
+        NRF_QDEC->ENABLE = 0;
+        NRF_COMP->ENABLE = 0;
+        NRF_POWER->DCDCEN = 1;
+
+        *(volatile uint32_t *)0x40002FFC = 0;
+        *(volatile uint32_t *)0x40002FFC;
+        *(volatile uint32_t *)0x40002FFC = 1;
+
+        digitalWrite(LEDR, HIGH);
+        digitalWrite(LEDG, HIGH);
+        digitalWrite(LEDB, HIGH);
+
+    } else if (config.mode == MODE_LOGGING) {
         config.mode = MODE_IDLE;
+        saveConfig();
+
+        NRF_USBD->ENABLE = 1;
+        NRF_CLOCK->TASKS_HFCLKSTART = 1;
+        NRF_UART0->ENABLE = 1;
+        NRF_UARTE1->ENABLE = 1;
+    }
+    
+    currentMode = config.mode;
+    
+    if (currentMode == MODE_IDLE) {        
         digitalWrite(LEDR, HIGH);
         digitalWrite(LEDG, LOW);
         digitalWrite(LEDB, HIGH);
         Serial.println("Ready for Connection");
-    } else if (isConfigured()) {
-        // On battery and configured: deploy into low-power logging.
-        currentMode = MODE_LOGGING;
-        benchLogging = false;
-        config.mode = MODE_LOGGING;
-        enterLowPowerLogging();
     } else {
-        // On battery but never configured: nothing to log. Stay idle.
-        currentMode = MODE_IDLE;
-        config.mode = MODE_IDLE;
+        Serial.end();
+        startLoggingClock();  // RTC2-based 1 Hz clock: master timing reference
     }
 }
 
@@ -560,29 +510,11 @@ void loop() {
             // Turn off sensors
             APDS.end();
             HS300x.end();
+            digitalWrite(LED_PWR, LOW);
 
-            // Bench mode: echo the reading so it can be watched over serial.
-            if (benchLogging) {
-                Serial.print(elapsedSeconds);
-                Serial.print(",");
-                Serial.print(temperature, 2);
-                Serial.print(",");
-                Serial.println(proximityVal);
-            }
-
-            // Advance the schedule by one interval.
+            // Advance the schedule by one interval and deep-sleep until then.
             nextWakeSecond += config.wakeupInterval;
-
-            if (benchLogging) {
-                // Stay powered and responsive (USB serial alive) between samples.
-                while (loggingElapsedSeconds() < nextWakeSecond) {
-                    delay(50);
-                }
-            } else {
-                // Low-power deep sleep until the next sample is due.
-                digitalWrite(LED_PWR, LOW);
-                sleepUntilSecond(nextWakeSecond);
-            }
+            sleepUntilSecond(nextWakeSecond);
 
             break;
         }
