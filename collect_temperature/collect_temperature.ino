@@ -48,22 +48,11 @@ ConfigData config = {
 };
 
 uint32_t currentIndex = 0;
+uint32_t startMillis = 0;       // Track when logging started
 OperationMode currentMode = MODE_IDLE;
 FlashIAP flash;
 
 #define SERIAL_BAUD_RATE 9600
-
-// APDS9960 I2C address and register map (direct access for explicit config)
-#define APDS9960_I2C_ADDR        0x39
-#define APDS9960_REG_PPULSE      0x8E   // Proximity pulse count/length
-#define APDS9960_REG_CONTROL     0x8F   // LED drive / proximity gain / ALS gain
-#define APDS9960_REG_POFFSET_UR  0x9D   // Proximity offset, up/right photodiodes
-#define APDS9960_REG_POFFSET_DL  0x9E   // Proximity offset, down/left photodiodes
-
-// Sensor availability wait timeout, in RTC (1 Hz) seconds
-#define PROX_WAIT_TIMEOUT_S      2
-// Number of proximity samples discarded to let the analog front-end settle
-#define PROX_WARMUP_SAMPLES      2
 
 // Function declarations
 bool saveConfig();
@@ -72,11 +61,6 @@ bool initializeDevice(const uint8_t* packedData);
 uint32_t findHighestDataIndex();
 void sendReadableData();
 void processSerialCommand();
-void startLoggingClock();
-uint32_t loggingElapsedSeconds();
-void sleepUntilSecond(uint32_t targetSecond);
-void configureAPDS();
-uint8_t readProximityStable();
 
 bool saveConfig() {
     int result = flash.erase(CONFIG_ADDRESS, FLASH_PAGE_SIZE);
@@ -275,118 +259,6 @@ void processSerialCommand() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Low-power timekeeping and sleep
-//
-// RTC0 is reserved for the SoftDevice (BLE) and RTC1 drives the mbed RTOS tick,
-// so RTC2 is the only free RTC. We run it at 1 Hz off the already-running LFCLK
-// (32.768 kHz) and use its 24-bit COUNTER as the master "seconds since logging
-// started" clock. This replaces millis() for logging timing: during deep sleep
-// we mask interrupts, which freezes the RTOS tick (and therefore millis()), but
-// RTC2 keeps counting, so elapsed time stays accurate across sleeps.
-// ---------------------------------------------------------------------------
-void startLoggingClock() {
-    // LFCLK is already running (the RTOS tick depends on it), so we only touch
-    // RTC2 here and leave the clock source alone to avoid disturbing RTC1.
-    NRF_RTC2->TASKS_STOP  = 1;
-    NRF_RTC2->TASKS_CLEAR = 1;
-    NRF_RTC2->PRESCALER   = 32767;   // 32768 / (32767 + 1) = 1 Hz -> 1 tick/sec
-    NRF_RTC2->INTENCLR    = 0xFFFFFFFF;
-    NRF_RTC2->EVTENCLR    = 0xFFFFFFFF;
-    NRF_RTC2->EVENTS_COMPARE[0] = 0;
-    NRF_RTC2->TASKS_START = 1;
-}
-
-uint32_t loggingElapsedSeconds() {
-    return NRF_RTC2->COUNTER & 0x00FFFFFF;   // 24-bit counter, ~194 days at 1 Hz
-}
-
-// Enter System-ON deep sleep until RTC2 reaches targetSecond. Interrupts are
-// masked so the RTOS tick cannot wake us ~1000x/second; instead SEVONPEND lets
-// the pending RTC2 compare wake __WFE while the ISR itself never vectors.
-void sleepUntilSecond(uint32_t targetSecond) {
-    targetSecond &= 0x00FFFFFF;
-
-    // Already there (e.g. sampling overran the interval): don't sleep.
-    if (loggingElapsedSeconds() >= targetSecond) {
-        return;
-    }
-
-    NRF_RTC2->CC[0] = targetSecond;
-    NRF_RTC2->EVENTS_COMPARE[0] = 0;
-    NRF_RTC2->EVTENSET = RTC_EVTENSET_COMPARE0_Msk;
-    NRF_RTC2->INTENSET = RTC_INTENSET_COMPARE0_Msk;
-
-    NVIC_ClearPendingIRQ(RTC2_IRQn);
-    NVIC_EnableIRQ(RTC2_IRQn);
-    SCB->SCR |= SCB_SCR_SEVONPEND_Msk;   // pending IRQ generates an event for WFE
-
-    __disable_irq();
-    while (loggingElapsedSeconds() < targetSecond &&
-           NRF_RTC2->EVENTS_COMPARE[0] == 0) {
-        __DSB();
-        __WFE();
-        __SEV();   // clear any stale event so the following WFE truly sleeps
-        __WFE();
-    }
-
-    // Tear down before re-enabling IRQs so the (handler-less) RTC2 IRQ can't fire.
-    NRF_RTC2->INTENCLR = RTC_INTENSET_COMPARE0_Msk;
-    NRF_RTC2->EVTENCLR = RTC_EVTENSET_COMPARE0_Msk;
-    NRF_RTC2->EVENTS_COMPARE[0] = 0;
-    NVIC_ClearPendingIRQ(RTC2_IRQn);
-    NVIC_DisableIRQ(RTC2_IRQn);
-    __enable_irq();
-}
-
-// ---------------------------------------------------------------------------
-// Proximity sensor configuration and drift mitigation
-//
-// The bundled Arduino_APDS9960 library leaves gain/LED-drive/offset at library
-// defaults, which lets the proximity baseline wander over long deployments
-// (enclosure crosstalk plus thermal drift of the IR LED and photodiode as the
-// splint warms). We program these explicitly on every begin() so each reading
-// is taken under identical, settled conditions, and use a lower LED drive to
-// cut LED self-heating (a real drift source) while still easily detecting a
-// splint pressed against skin.
-// ---------------------------------------------------------------------------
-static void writeAPDS(uint8_t reg, uint8_t value) {
-    Wire.beginTransmission(APDS9960_I2C_ADDR);
-    Wire.write(reg);
-    Wire.write(value);
-    Wire.endTransmission();
-}
-
-void configureAPDS() {
-    // CONTROL: LDRIVE=0b11 (12.5 mA IR LED), PGAIN=0b10 (4x), AGAIN=0b00 -> 0xC8
-    writeAPDS(APDS9960_REG_CONTROL, 0xC8);
-    // PPULSE: PPLEN=0b01 (8 us pulses), PPULSE=7 (8 pulses) -> 0x47
-    writeAPDS(APDS9960_REG_PPULSE, 0x47);
-    // Explicit, deterministic proximity offsets. If the splint housing produces
-    // measurable crosstalk, raise these (signed-magnitude, bit7 = sign) after a
-    // bench measurement of the unworn baseline.
-    writeAPDS(APDS9960_REG_POFFSET_UR, 0x00);
-    writeAPDS(APDS9960_REG_POFFSET_DL, 0x00);
-}
-
-// Read proximity after discarding warm-up samples, with a bounded wait so a
-// stalled sensor returns a benign value instead of freezing all logging.
-uint8_t readProximityStable() {
-    for (int i = 0; i <= PROX_WARMUP_SAMPLES; i++) {
-        uint32_t waitStart = loggingElapsedSeconds();
-        while (!APDS.proximityAvailable()) {
-            if (loggingElapsedSeconds() - waitStart >= PROX_WAIT_TIMEOUT_S) {
-                return 0;   // treat a timeout as "far / not covered"
-            }
-        }
-        int raw = APDS.readProximity();
-        if (i == PROX_WARMUP_SAMPLES) {
-            return (uint8_t)(raw & 0xFF);
-        }
-    }
-    return 0;
-}
-
 void setup() {
     Serial.begin(SERIAL_BAUD_RATE);
 
@@ -455,7 +327,10 @@ void setup() {
         digitalWrite(LEDR, HIGH);
         digitalWrite(LEDG, HIGH);
         digitalWrite(LEDB, HIGH);
-
+        
+        // FIXED: Record start time for accurate timing
+        startMillis = millis();
+        
     } else if (config.mode == MODE_LOGGING) {
         config.mode = MODE_IDLE;
         saveConfig();
@@ -475,28 +350,33 @@ void setup() {
         Serial.println("Ready for Connection");
     } else {
         Serial.end();
-        startLoggingClock();  // RTC2-based 1 Hz clock: master timing reference
+        startMillis = millis();  // Initialize timing reference
     }
 }
 
 void loop() {
     switch (currentMode) {
         case MODE_LOGGING: {
-            // Absolute wake schedule (seconds since logging start) so cadence
-            // does not drift with per-sample processing time.
-            static uint32_t nextWakeSecond = 0;
-
-            // Actual elapsed time since logging started, from the RTC clock.
-            uint32_t elapsedSeconds = loggingElapsedSeconds();
-
-            // Initialize sensors and apply explicit, drift-resistant config.
+            // Calculate target wake time BEFORE doing any work
+            static uint32_t nextWakeTime = 0;
+            if (nextWakeTime == 0) {
+                nextWakeTime = millis();  // Initialize on first run
+            }
+            
+            // Calculate actual elapsed seconds since logging started
+            uint32_t elapsedSeconds = (millis() - startMillis) / 1000;
+            
+            // Initialize sensors
             APDS.begin();
-            configureAPDS();
             HS300x.begin();
             delay(50);
 
-            // Read sensors (proximity with warm-up discard and a bounded wait).
-            uint8_t proximityVal = readProximityStable();
+            // Wait for proximity sensor
+            while (!APDS.proximityAvailable()) {}
+
+            // Read sensors
+            int rawProximity = APDS.readProximity();
+            uint8_t proximityVal = (uint8_t)(rawProximity & 0xFF);  // Ensure 0-255 range
             float temperature = HS300x.readTemperature();
 
             // Save reading with actual elapsed time
@@ -506,16 +386,22 @@ void loop() {
                 saveConfig();
                 return;
             }
-
+            
             // Turn off sensors
             APDS.end();
             HS300x.end();
             digitalWrite(LED_PWR, LOW);
-
-            // Advance the schedule by one interval and deep-sleep until then.
-            nextWakeSecond += config.wakeupInterval;
-            sleepUntilSecond(nextWakeSecond);
-
+            
+            // Calculate next wake time based on interval, not current time
+            nextWakeTime += config.wakeupInterval * 1000UL;
+            
+            // Calculate how long to sleep (accounting for work already done)
+            uint32_t currentTime = millis();
+            if (nextWakeTime > currentTime) {
+                uint32_t sleepDuration = nextWakeTime - currentTime;
+                delay(sleepDuration);
+            }
+            
             break;
         }
         case MODE_IDLE:
