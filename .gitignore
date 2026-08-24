@@ -7,6 +7,10 @@ __pycache__/
 # Build artifacts (cx_Freeze)
 build/
 Splint_Adherence/
+libs/
+Lib
+Scripts/
+Include/
 
 # Environments
 .venv/
@@ -15,3 +19,7 @@ env/
 
 # OS / editor
 .DS_Store
+
+# Others
+etc/
+share/
