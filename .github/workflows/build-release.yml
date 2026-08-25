@@ -1,28 +1,32 @@
 name: Build and Release
 
-# Builds the standalone Windows executable and macOS app bundle whenever a
-# version tag (e.g. v1.1.0) is pushed, and attaches both to a GitHub Release.
+# Builds the standalone Windows executable and macOS app bundle.
 #
-# To cut a release:
-#   git tag v1.1.0
-#   git push origin v1.1.0
-#
-# The tag name is what triggers this; make sure it matches the version in
-# setup.py so the artifacts and the release line up.
+# Two ways to run it:
+#   1. Push a version tag (e.g. v1.1.0) -> builds AND publishes a GitHub Release
+#      with both bundles attached:
+#        git tag v1.1.0
+#        git push origin v1.1.0
+#      (Make the tag match the version in setup.py.)
+#   2. Click "Run workflow" on the Actions tab (workflow_dispatch) -> builds only,
+#      with the bundles available as downloadable run artifacts. Use this to test
+#      a branch without tagging or touching a release.
 
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 # Needed so the workflow can create the release and upload assets to it.
 permissions:
   contents: write
 
 jobs:
-  # Create the release first so the two build jobs only ever upload to an
-  # existing release (avoids a race where both try to create it at once).
+  # Create the release first (tag builds only) so the two build jobs only ever
+  # upload to an existing release (avoids a race where both try to create it).
   create-release:
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - name: Create or update the release for this tag
@@ -32,6 +36,8 @@ jobs:
 
   build-windows:
     needs: create-release
+    # Run even on manual dispatch, where create-release is skipped.
+    if: always()
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -54,7 +60,14 @@ jobs:
       - name: Zip the build folder
         run: Compress-Archive -Path Splint_Adherence -DestinationPath Splint_Adherence-windows.zip
 
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Splint_Adherence-windows
+          path: Splint_Adherence-windows.zip
+
       - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: Splint_Adherence-windows.zip
@@ -62,6 +75,8 @@ jobs:
 
   build-macos:
     needs: create-release
+    # Run even on manual dispatch, where create-release is skipped.
+    if: always()
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -86,7 +101,14 @@ jobs:
           cd build
           zip -r ../Splint_Adherence-macos.zip *.app
 
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Splint_Adherence-macos
+          path: Splint_Adherence-macos.zip
+
       - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: Splint_Adherence-macos.zip
