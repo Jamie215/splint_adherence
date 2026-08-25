@@ -54,16 +54,10 @@ FlashIAP flash;
 
 #define SERIAL_BAUD_RATE 9600
 
-// DIAGNOSTIC SWITCH. Set to 1 to build an observable logging mode: USB/serial is
-// kept alive during logging and each cycle prints what the sensors did, and the
-// proximity wait times out instead of hanging. Keep at 0 for normal low-power
-// deployment; flip to 1 only for bench debugging.
-#define DEBUG_LOGGING 0
-
 // Proximity samples discarded before the kept reading, so the logged value comes
 // from a settled sensor front end rather than the first post-power-on
-// conversion. The sensor config itself is left at the library default (APDS
-// re-initializes on every begin()), so the proximity scale is unchanged.
+// conversion. Sensor config is left at the library default (APDS re-initializes
+// on every begin()), so the proximity scale is unchanged.
 #define PROX_WARMUP_SAMPLES   2
 // Per-conversion bounded wait (ms) so a stuck/absent sensor can never hang.
 #define PROX_WAIT_TIMEOUT_MS  1000
@@ -313,8 +307,7 @@ void setup() {
         config.mode = MODE_LOGGING;
         saveConfig();
 
-#if !DEBUG_LOGGING
-        // Power saving configurations (skipped in DEBUG so USB/serial survive).
+        // Power saving configurations
         NRF_USBD->ENABLE = 0;
         NRF_CLOCK->TASKS_HFCLKSTOP = 1;
         NRF_SAADC->ENABLE = 0;
@@ -323,10 +316,10 @@ void setup() {
         NRF_PWM2->ENABLE = 0;
         NRF_PDM->ENABLE = 0;
         NRF_I2S->ENABLE = 0;
-        // Do NOT disable SPI0/SPI1 here. On the nRF52840 they share silicon
-        // with the TWI0/TWI1 (I2C) controllers the APDS9960/HS300x sensors use;
-        // disabling them killed the I2C bus in logging mode, hanging the
-        // proximity read so nothing was ever logged. Confirmed on hardware.
+        // Do NOT disable SPI0/SPI1 here. On the nRF52840 they share silicon with
+        // the TWI0/TWI1 (I2C) controllers the APDS9960/HS300x sensors use, so
+        // disabling them kills the I2C bus in logging mode -- the proximity read
+        // then hangs and nothing is ever logged. (Confirmed on hardware.)
         // NRF_SPI0->ENABLE = 0;
         // NRF_SPI1->ENABLE = 0;
         NRF_UART0->TASKS_STOPTX = 1;
@@ -335,7 +328,7 @@ void setup() {
         NRF_UARTE1->TASKS_STOPTX = 1;
         NRF_UARTE1->TASKS_STOPRX = 1;
         NRF_UARTE1->ENABLE = 0;
-        NRF_RADIO->POWER = 0;
+        NRF_RADIO->POWER = 0; 
         NRF_QDEC->ENABLE = 0;
         NRF_COMP->ENABLE = 0;
         NRF_POWER->DCDCEN = 1;
@@ -343,7 +336,6 @@ void setup() {
         *(volatile uint32_t *)0x40002FFC = 0;
         *(volatile uint32_t *)0x40002FFC;
         *(volatile uint32_t *)0x40002FFC = 1;
-#endif
 
         digitalWrite(LEDR, HIGH);
         digitalWrite(LEDG, HIGH);
@@ -370,11 +362,7 @@ void setup() {
         digitalWrite(LEDB, HIGH);
         Serial.println("Ready for Connection");
     } else {
-#if !DEBUG_LOGGING
         Serial.end();
-#else
-        Serial.println("DEBUG: entering logging mode (serial kept alive)");
-#endif
         startMillis = millis();  // Initialize timing reference
     }
 }
@@ -415,31 +403,16 @@ void loop() {
             uint32_t elapsedSeconds = (millis() - startMillis) / 1000;
             
             // Initialize sensors
-            int apdsOk = APDS.begin();
-            int hsOk = HS300x.begin();
+            APDS.begin();
+            HS300x.begin();
             delay(50);
 
             // Read proximity after a warm-up discard for a settled value; the
             // read is internally bounded so a stuck/absent sensor can't hang.
             bool proxReady = false;
             uint8_t proximityVal = readProximitySettled(proxReady);
+            (void)proxReady;
             float temperature = HS300x.readTemperature();
-
-#if DEBUG_LOGGING
-            Serial.print("DEBUG cycle: APDS.begin=");
-            Serial.print(apdsOk);
-            Serial.print(" HS300x.begin=");
-            Serial.print(hsOk);
-            Serial.print(" proxReady=");
-            Serial.print(proxReady);
-            Serial.print(" prox=");
-            Serial.print(proximityVal);
-            Serial.print(" temp=");
-            Serial.println(temperature, 2);
-#else
-            (void)apdsOk;
-            (void)hsOk;
-#endif
 
             // Save reading with actual elapsed time
             if (!saveTemperatureReading(temperature, proximityVal, elapsedSeconds)) {
