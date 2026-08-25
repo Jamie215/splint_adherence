@@ -3,12 +3,13 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .eggs/
+pyvenv.cfg
 
 # Build artifacts (cx_Freeze)
 build/
 Splint_Adherence/
 libs/
-Lib
+Lib/
 Scripts/
 Include/
 
