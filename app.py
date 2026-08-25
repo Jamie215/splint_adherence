@@ -7,10 +7,22 @@ monkey.patch_all()
 
 import atexit
 import os
+import sys
 import logging
 import json
 from threading import Timer
 import webbrowser
+
+# In a windowed (Win32GUI) build there is no console attached, so sys.stdout
+# and sys.stderr are None. Some libraries write to them at import time -- most
+# notably numpy.f2py, which scipy pulls in transitively -- which otherwise
+# crashes with "'NoneType' object has no attribute 'write'". Point them at a
+# harmless sink before those imports run. Must happen before importing the
+# pages below (which import scipy).
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w")
 
 from dash import html, dcc, Input, Output
 from flask import request, jsonify, render_template_string
