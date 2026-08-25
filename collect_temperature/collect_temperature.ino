@@ -51,7 +51,6 @@ uint32_t currentIndex = 0;
 uint32_t startMillis = 0;       // Track when logging started
 OperationMode currentMode = MODE_IDLE;
 FlashIAP flash;
-static volatile bool rtc2Fired = false;   // set by the RTC2 wake interrupt
 
 #define SERIAL_BAUD_RATE 9600
 
@@ -77,7 +76,6 @@ uint32_t findHighestDataIndex();
 void sendReadableData();
 void processSerialCommand();
 uint8_t readProximitySettled(bool &ready);
-void lowPowerWait(uint32_t ms);
 
 bool saveConfig() {
     int result = flash.erase(CONFIG_ADDRESS, FLASH_PAGE_SIZE);
@@ -381,47 +379,6 @@ void setup() {
     }
 }
 
-// RTC2 fires this at the end of a low-power wait. Clear the event and flag it so
-// the __WFI loop in lowPowerWait() exits.
-extern "C" void RTC2_IRQHandler(void) {
-    if (NRF_RTC2->EVENTS_COMPARE[0]) {
-        NRF_RTC2->EVENTS_COMPARE[0] = 0;
-        NRF_RTC2->INTENCLR = RTC_INTENCLR_COMPARE0_Msk;
-        rtc2Fired = true;
-    }
-}
-
-// Sleep for `ms` in the nRF52840's low-power System-ON state instead of the
-// shallow sleep delay() leaves the chip in. RTC2 (a free RTC; RTC0 is the
-// SoftDevice, RTC1 the mbed tick) runs at 1024 Hz off the 32 kHz LFCLK and wakes
-// the CPU from __WFI at the deadline. Interrupts stay enabled throughout, so the
-// RTOS clock (millis) and everything else keep running normally -- only the CPU
-// idles deeper. HFCLK was already stopped when logging mode was entered.
-void lowPowerWait(uint32_t ms) {
-    if (ms == 0) return;
-    uint32_t ticks = (uint32_t)(((uint64_t)ms * 1024) / 1000);  // 1024 Hz
-    if (ticks == 0) ticks = 1;
-    if (ticks > 0xFFFFFF) ticks = 0xFFFFFF;   // 24-bit counter (~4.5 h) cap
-
-    rtc2Fired = false;
-    NRF_RTC2->TASKS_STOP = 1;
-    NRF_RTC2->TASKS_CLEAR = 1;
-    NRF_RTC2->PRESCALER = 31;                 // 32768/(31+1) = 1024 Hz
-    NRF_RTC2->CC[0] = ticks;
-    NRF_RTC2->EVENTS_COMPARE[0] = 0;
-    NRF_RTC2->INTENSET = RTC_INTENSET_COMPARE0_Msk;
-    NVIC_ClearPendingIRQ(RTC2_IRQn);
-    NVIC_EnableIRQ(RTC2_IRQn);
-    NRF_RTC2->TASKS_START = 1;
-
-    while (!rtc2Fired) {
-        __WFI();   // other interrupts may wake us early; just re-enter
-    }
-
-    NRF_RTC2->TASKS_STOP = 1;
-    NVIC_DisableIRQ(RTC2_IRQn);
-}
-
 // Read proximity after discarding warm-up samples so the kept value comes from a
 // settled front end. Every wait is bounded, so a stuck/absent sensor returns 0
 // (far / not covered) instead of hanging the logger. `ready` reports whether a
@@ -504,11 +461,7 @@ void loop() {
             uint32_t currentTime = millis();
             if (nextWakeTime > currentTime) {
                 uint32_t sleepDuration = nextWakeTime - currentTime;
-#if DEBUG_LOGGING
-                delay(sleepDuration);          // keep serial alive for bench debug
-#else
-                lowPowerWait(sleepDuration);   // true low-power sleep between samples
-#endif
+                delay(sleepDuration);
             }
             
             break;
