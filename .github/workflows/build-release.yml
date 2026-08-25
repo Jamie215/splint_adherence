@@ -1,0 +1,87 @@
+name: Build and Release
+
+# Builds the standalone Windows executable and macOS app bundle whenever a
+# version tag (e.g. v1.1.0) is pushed, and attaches both to a GitHub Release.
+#
+# To cut a release:
+#   git tag v1.1.0
+#   git push origin v1.1.0
+#
+# The tag name is what triggers this; make sure it matches the version in
+# setup.py so the artifacts and the release line up.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Needed so the workflow can create the release and upload assets to it.
+permissions:
+  contents: write
+
+jobs:
+  # Create the release first so the two build jobs only ever upload to an
+  # existing release (avoids a race where both try to create it at once).
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create or update the release for this tag
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+
+  build-windows:
+    needs: create-release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build Windows executable
+        run: python setup.py build_exe
+
+      - name: Zip the build folder
+        run: Compress-Archive -Path Splint_Adherence -DestinationPath Splint_Adherence-windows.zip
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Splint_Adherence-windows.zip
+          fail_on_unmatched_files: true
+
+  build-macos:
+    needs: create-release
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build macOS app bundle
+        run: python setup.py bdist_mac
+
+      - name: Zip the app bundle
+        run: |
+          cd build
+          zip -r ../Splint_Adherence-macos.zip *.app
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Splint_Adherence-macos.zip
+          fail_on_unmatched_files: true

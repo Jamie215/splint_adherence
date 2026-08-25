@@ -9,6 +9,12 @@ build_exe_options = {
     "packages": ['engineio','socketio','flask_socketio','threading', 'numpy', 'pandas', 'scipy']
 }
 
+# macOS .app bundle options (used by `python setup.py bdist_mac`). Naming the
+# bundle explicitly gives a predictable build/Splint_Adherence.app output path.
+bdist_mac_options = {
+    "bundle_name": "Splint_Adherence",
+}
+
 # Base can be "Win32GUI" if you're building a GUI application on Windows
 base = None
 if sys.platform == "win32":
@@ -26,6 +32,9 @@ setup(
     name="Splint_Adherence",
     version="1.1.0",
     description="Splint Adherence Measurement Application",
-    options={"build_exe": build_exe_options},
+    options={
+        "build_exe": build_exe_options,
+        "bdist_mac": bdist_mac_options,
+    },
     executables=executables
 )
