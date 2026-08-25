@@ -44,6 +44,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          # cx_Freeze is the build tool; install it explicitly so the build
+          # still works even if it is ever missing from requirements.txt.
+          pip install cx_Freeze==7.1.1
 
       - name: Build Windows executable
         run: python setup.py build_exe
@@ -71,6 +74,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          # cx_Freeze is the build tool; install it explicitly so the build
+          # still works even if it is ever missing from requirements.txt.
+          pip install cx_Freeze==7.1.1
 
       - name: Build macOS app bundle
         run: python setup.py bdist_mac
