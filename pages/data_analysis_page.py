@@ -124,7 +124,9 @@ data_analysis_layout = html.Div([
             "The device lost its logging start time, so the timestamps in this file "
             "are wrong (dates in 1970 / 2106). The readings and the time between them "
             "are intact. Enter the start date and time you chose when initializing "
-            "the device to rebuild the real timestamps."
+            "the device to rebuild the real timestamps.",
+            # The Litera theme sets <p> to a serif font; use the page's font instead.
+            style={'fontFamily': 'inherit'}
         ),
         html.Div([
             dcc.DatePickerSingle(id='recovery-date', display_format='YYYY-MM-DD',
