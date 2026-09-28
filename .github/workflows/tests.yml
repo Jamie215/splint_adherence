@@ -1,0 +1,32 @@
+name: Tests
+
+# Runs the unit tests (analysis helpers + serial protocol parsing). No
+# hardware is needed; the Arduino is replaced by a fake serial port.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # cx_Freeze is build-only and not needed to run the tests.
+          grep -v '^cx_Freeze' requirements.txt > requirements-test.txt
+          pip install -r requirements-test.txt -r requirements-dev.txt
+
+      - name: Run tests
+        run: pytest -q
