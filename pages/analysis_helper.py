@@ -5,6 +5,8 @@ import numpy as np
 from scipy import sparse
 from scipy.sparse.linalg import spsolve
 
+from timezone_config import DISPLAY_TZ
+
 def parse_file(contents):
     """
     Parser specifically designed for files with metadata section followed by data table.
@@ -32,6 +34,10 @@ def parse_text(file_content):
                 data_start = i
                 break
             
+        if data_start is None:
+            return None, {}, ("Could not parse file: no data header row "
+                              "(e.g. 'Timestamp,Temperature,ProximityVal') was found.")
+
         # Extract metadata
         metadata = {}
         for i in range(data_start):
@@ -122,6 +128,17 @@ def to_csv_with_metadata(df, metadata):
     lines = [f"{key},{value}" for key, value in (metadata or {}).items()]
     return '\r\n'.join(lines) + '\r\n' + df.to_csv(index=False, lineterminator='\r\n')
 
+def to_display_tz(time_series):
+    """
+    Convert a column of timestamps to tz-aware Eastern time (see
+    timezone_config.DISPLAY_TZ).
+
+    Current downloads carry an explicit UTC offset (``...-05:00``), so they are
+    converted exactly. Older downloads have naive timestamps that were written
+    in UTC, so naive values are interpreted as UTC -- which puts legacy files on
+    the same Eastern clock as new ones.
+    """
+    return pd.to_datetime(time_series, utc=True).dt.tz_convert(DISPLAY_TZ)
 
 def baseline_asls(y, lam=1e6, p=0.4, niter=20):
     """
@@ -273,10 +290,10 @@ def detect_onsets_offsets(time_series, temp_series, prox_series):
             # - Proximity is physically lost (sensor no longer covered)
             # - OR it's cooling fast AND (is back near baseline OR has dropped significantly from peak)
             if (not prox_covered[i]) or (is_cooling_fast and (delta[i] < OFFSET_DELTA or is_below_peak)):
-                # If triggered by cooling, the actual removal happened 1 sample (5m) prior
+                # If triggered by cooling, the actual removal happened 1 sample prior
                 offset_idx = i - 1 if prox_covered[i] else i
                 
-                # Minimum session length check (10 mins)
+                # Minimum session length check (2 samples, i.e. 10 min at 5-min sampling)
                 if (offset_idx - onset_idx) >= 2:
                     events.append((onset_idx, offset_idx))
                 
@@ -286,15 +303,17 @@ def detect_onsets_offsets(time_series, temp_series, prox_series):
     # DataFrame preparation
     out = pd.DataFrame(events, columns=['StartIdx', 'EndIdx'])
     if not out.empty:
-        out['Onset'] = time_series.iloc[out['StartIdx']].values
-        out['Offset'] = time_series.iloc[out['EndIdx']].values
+        # reset_index (not .values) keeps any timezone on the timestamps, so
+        # durations stay correct across DST changes.
+        out['Onset'] = time_series.iloc[out['StartIdx']].reset_index(drop=True)
+        out['Offset'] = time_series.iloc[out['EndIdx']].reset_index(drop=True)
         out['DurationMin'] = (out['Offset'] - out['Onset']).dt.total_seconds()/60
     
     return baseline, delta, out
 
 def extract_peaks(time_series, temp_series, events_df):
     """
-    Returns a DaraFrame composed of PeakTime, PeakTemp
+    Returns a DataFrame composed of EventID, PeakTemp, PeakTime
     """
     rows = []
     for _, event in events_df.iterrows():
@@ -308,73 +327,56 @@ def extract_peaks(time_series, temp_series, events_df):
 
     return pd.DataFrame(rows)
 
-def prepare_gantt(onset_times, offset_times):
-    split_rows = []
-
-    # Iterate by value rather than positional/label index: the incoming Series
-    # may carry a non-sequential index (e.g. after a sort), so onset_times[i]
-    # would be unreliable.
+def _split_by_day(onset_times, offset_times):
+    """
+    Yield (date, segment_start, segment_end, onset, offset) for each calendar
+    day an event touches, clipping the event to that day. Works with naive or
+    tz-aware timestamps: days are taken in the timestamps' own zone, and each
+    midnight is localized separately so DST days keep their true 23/25-hour
+    length.
+    """
     for onset, offset in zip(onset_times, offset_times):
-        start = pd.to_datetime(onset)
-        end = pd.to_datetime(offset)
+        start = pd.Timestamp(onset)
+        end = pd.Timestamp(offset)
+        day = start.date()
+        while day <= end.date():
+            day_start = pd.Timestamp(day).tz_localize(start.tz)
+            day_end = pd.Timestamp(day + pd.Timedelta(days=1)).tz_localize(start.tz)
+            yield day, max(start, day_start), min(end, day_end), onset, offset
+            day += pd.Timedelta(days=1)
 
-        current = start
-        while current.date() <= end.date():
-            this_date = current.date()
+def _hour_of_day(ts, day):
+    """Fractional hour of day of `ts` on `day`; 24.0 if `ts` is the next midnight."""
+    if ts.date() != day:
+        return 24.0
+    return ts.hour + ts.minute / 60
 
-            if this_date == start.date() and this_date == end.date():
-                # Same day: normal case
-                start_hr = start.hour + start.minute / 60
-                end_hr = end.hour + end.minute / 60
-            elif this_date == start.date():
-                # First day of a multi-day span
-                start_hr = start.hour + start.minute / 60
-                end_hr = 24.0
-            elif this_date == end.date():
-                # Final day of a multi-day span
-                start_hr = 0.0
-                end_hr = end.hour + end.minute / 60
-            else:
-                # Middle day
-                start_hr = 0.0
-                end_hr = 24.0
-            
-            split_rows.append({
-                'Date': str(this_date),
-                'StartHour': start_hr,
-                'EndHour': end_hr,
-                'Start': onset,
-                'End': offset
-            })
-
-            current += pd.Timedelta(days=1)
-    return pd.DataFrame(split_rows)
+def prepare_gantt(onset_times, offset_times):
+    """
+    Split each wear event into one row per calendar day with its start/end hour
+    of day, for the hour-of-day timeline chart.
+    """
+    # Iterate by value rather than positional/label index: the incoming Series
+    # may carry a non-sequential index (e.g. after a sort).
+    rows = [{
+        'Date': str(day),
+        'StartHour': _hour_of_day(seg_start, day),
+        'EndHour': _hour_of_day(seg_end, day),
+        'Start': onset,
+        'End': offset,
+    } for day, seg_start, seg_end, onset, offset in _split_by_day(onset_times, offset_times)]
+    return pd.DataFrame(rows, columns=['Date', 'StartHour', 'EndHour', 'Start', 'End'])
 
 def prepare_occurance_summary(onset_times, offset_times):
-    onset_series = pd.to_datetime(onset_times)
-    offset_series = pd.to_datetime(offset_times)
-
-    summary_rows = []
-
-    for start, end in zip(onset_series, offset_series):
-        current = start
-        while current.date() <= end.date():
-            date = current.date()
-
-            if date == start.date() and date == end.date():
-                dur = (end - start).total_seconds() / 60.0
-            elif date == start.date():
-                dur = ((pd.Timestamp.combine(date + pd.Timedelta(days=1), pd.Timestamp.min.time()) - start).total_seconds()) / 60.0
-            elif date == end.date():
-                dur = ((end - pd.Timestamp.combine(date, pd.Timestamp.min.time())).total_seconds()) / 60.0
-
-            else:
-                dur = 1440.0  # full day = 24h = 1440 minutes
-
-            summary_rows.append({'Date': date, 'DurationMin': dur})
-            current += pd.Timedelta(days=1)
-
-    summary_df = pd.DataFrame(summary_rows)
+    """
+    Total wear minutes and event count per calendar day. Events spanning
+    midnight are split so each day gets only its own share.
+    """
+    rows = [{
+        'Date': day,
+        'DurationMin': (seg_end - seg_start).total_seconds() / 60.0,
+    } for day, seg_start, seg_end, _, _ in _split_by_day(onset_times, offset_times)]
+    summary_df = pd.DataFrame(rows, columns=['Date', 'DurationMin'])
 
     return summary_df.groupby('Date').agg(
                 TotalDurationMin=('DurationMin', 'sum'),

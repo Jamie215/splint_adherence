@@ -8,12 +8,33 @@ from typing import Optional, Dict, Any, Tuple, Union
 import serial
 import serial.tools.list_ports
 
+from timezone_config import DISPLAY_TZ, DISPLAY_TZ_NAME
+
 logger = logging.getLogger(__name__)
 
 # Constants for serial communication
-BAUD_RATE = 115200
+# Matches SERIAL_BAUD_RATE in the firmware. The Nano 33 BLE's native USB (CDC)
+# port ignores the baud rate, so this value does not affect throughput -- it is
+# kept in sync only so the two sides don't look inconsistent.
+BAUD_RATE = 9600
 TIMEOUT = 5  # seconds
 READ_TIMEOUT = 10  # seconds for longer operations like data download
+
+# Seconds between logged samples. Intentionally fixed at 5 minutes for this
+# study; the analysis infers the cadence from timestamps, so it would still
+# work if this ever changed.
+WAKEUP_INTERVAL_SECONDS = 300
+
+
+def format_epoch(epoch_time: int) -> str:
+    """
+    Render a device UTC epoch as Eastern wall-clock time with its UTC offset,
+    e.g. ``2026-01-01 08:00:00-05:00``. The offset keeps the repeated hour at
+    the autumn DST change unambiguous.
+    """
+    return (datetime.datetime.fromtimestamp(epoch_time, tz=datetime.timezone.utc)
+            .astimezone(DISPLAY_TZ)
+            .isoformat(sep=' '))
 
 
 class ArduinoClient:
@@ -125,7 +146,7 @@ class ArduinoClient:
             return b"ERROR"
 
     def initialize(self, epoch_time: int, personal_id: Union[int, str] = "",
-                   wakeup_interval: int = 300) -> Tuple[bool, str]:
+                   wakeup_interval: int = WAKEUP_INTERVAL_SECONDS) -> Tuple[bool, str]:
         """
         Initialize the Arduino with timestamp, ID and wakeup interval.
 
@@ -323,8 +344,10 @@ class ArduinoClient:
             # Process the line according to state
             if in_metadata:
                 if line_str.startswith("Timestamp,Temperature,ProximityVal"):
-                    # Found header line, switch to data mode
+                    # Found header line, switch to data mode. Record the zone
+                    # the timestamps below are rendered in.
                     in_metadata = False
+                    output.write(f"Timezone,{DISPLAY_TZ_NAME}\r\n")
                     output.write("Timestamp,Temperature,ProximityVal\r\n")
                 elif line_str.startswith("Initial Timestamp,"):
                     # Process timestamp in metadata
@@ -332,10 +355,7 @@ class ArduinoClient:
                     if len(parts) > 1 and parts[1].strip().isdigit():
                         # Convert timestamp to readable format
                         epoch_time = int(parts[1].strip())
-                        iso_time = datetime.datetime.fromtimestamp(
-                            epoch_time, tz=datetime.timezone.utc
-                        ).strftime('%Y-%m-%d %H:%M:%S')
-                        output.write(f"Initial Timestamp,{iso_time}\r\n")
+                        output.write(f"Initial Timestamp,{format_epoch(epoch_time)}\r\n")
                     else:
                         # Keep original line if conversion fails
                         output.write(f"{line_str}\r\n")
@@ -349,10 +369,7 @@ class ArduinoClient:
                     # It's a data line with timestamp
                     try:
                         epoch_time = int(parts[0].strip())
-                        iso_time = datetime.datetime.fromtimestamp(
-                            epoch_time, tz=datetime.timezone.utc
-                        ).strftime('%Y-%m-%d %H:%M:%S')
-                        output.write(f"{iso_time},{parts[1]},{parts[2]}\r\n")
+                        output.write(f"{format_epoch(epoch_time)},{parts[1]},{parts[2]}\r\n")
                     except (ValueError, OverflowError) as e:
                         # Handle invalid timestamps
                         logger.warning(f"Invalid timestamp {parts[0]}: {e}")

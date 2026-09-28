@@ -6,7 +6,10 @@ build_exe_options = {
     "include_files": ["assets/"],
     "build_exe": "Splint_Adherence",
     "includes": ["idna.idnadata"],
-    "packages": ['engineio','socketio','flask_socketio','threading', 'numpy', 'pandas', 'scipy']
+    # pytz and tzdata carry the time zone database used for Eastern time
+    # (see timezone_config.py); list them so the frozen build bundles the data.
+    "packages": ['engineio','socketio','flask_socketio','threading', 'numpy', 'pandas', 'scipy',
+                 'pytz', 'tzdata']
 }
 
 # macOS .app bundle options (used by `python setup.py bdist_mac`). Naming the
@@ -30,7 +33,7 @@ executables = [
 
 setup(
     name="Splint_Adherence",
-    version="1.1.0",
+    version="1.2.0",
     description="Splint Adherence Measurement Application",
     options={
         "build_exe": build_exe_options,

@@ -3,7 +3,6 @@ import os
 import sys
 
 from dash import Dash
-import dash_bootstrap_components as dbc
 from flask_socketio import SocketIO
 
 # Resolve the assets folder so the app works regardless of the current working
@@ -17,12 +16,16 @@ else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ASSETS_FOLDER = os.path.join(BASE_DIR, "assets")
 
-# External style sheets. Files under the local assets folder (e.g. style.css)
-# are served and injected automatically by Dash, so they are not listed here.
+# Style sheets are vendored under assets/vendor/ (rather than loaded from
+# CDNs) so the app renders fully styled on offline clinic machines. They are
+# listed here explicitly so they always load BEFORE assets/style.css and our
+# overrides win. Their `.vendor.css` suffix keeps Dash from also auto-loading
+# them (after style.css) -- `assets_ignore` matches file names, not paths.
+# See HANDOFF.md ("Vendored front-end assets") for how to update them.
 external_stylesheets = [
-    "https://fonts.googleapis.com/css?family=Roboto:300,400,500,700&display=swap",
-    dbc.themes.LITERA,
-    dbc.icons.FONT_AWESOME,
+    "/assets/vendor/roboto/roboto.vendor.css",
+    "/assets/vendor/bootswatch-litera/bootstrap.min.vendor.css",
+    "/assets/vendor/fontawesome/css/all.min.vendor.css",
 ]
 
 # Initialize the app
@@ -30,6 +33,7 @@ app = Dash(
     __name__,
     external_stylesheets=external_stylesheets,
     assets_folder=ASSETS_FOLDER,
+    assets_ignore=r"\.vendor\.css$",
     suppress_callback_exceptions=True,
 )
 server = app.server
