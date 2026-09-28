@@ -77,7 +77,8 @@ Serial protocol:
 - The config is kept **A/B** in two pages, at `0x70000` and `0x71000`. Each copy is a `ConfigRecord` with a magic number (`"SPLT"`), a sequence number and a CRC.
 - Every save writes to the page *not* holding the current config, so a reset during a save can't destroy the last good copy. The single-page layout this replaced could be blanked by exactly that kind of interrupted save.
 - Data starts at `0x80000`, as 12-byte `TemperatureData` records (with padding), up to `MAX_DATA_ENTRIES = 15000`.
-- At 300 s per sample, that is about **52 days** of capacity.
+- At 300 s per sample, that is about **52 days** of storage. The clock
+  rollover at about 49.7 days hits first, though; see §8, "Deployment length".
 
 **Re-flashing a device:**
 - Firmware built before the A/B config (before PR #10) stores its config in a format the current firmware doesn't recognize.
@@ -225,14 +226,41 @@ unstyled on offline machines. These files now ship under `assets/vendor/`:
 
 ## 8. Known limitations and unverified items
 
-1. **`millis()` wraps around at about 49.7 days.**
-   - The logger's sleep calculation compares `nextWakeTime > currentTime`.
-     Near the wraparound it may skip sleeping and log a burst of samples
-     until the counter wraps.
-   - Capacity is about 52 days, so a long deployment can hit this.
-   - Elapsed-time stamps use unsigned subtraction and are unaffected; only the
-     spacing between samples is at risk.
-   - Bench-test before any deployment longer than about 45 days.
+1. **Deployment length: plan for about a month.** The system was designed
+   for a month of recording, and the longest full run tested is about 36 days
+   (one recording). Three separate limits apply, and the clock comes first:
+
+   | Limit | Cause | When | Status |
+   | --- | --- | --- | --- |
+   | Clock rollover | `millis()` is a 32-bit millisecond counter that wraps 2³² ms after power-on | ~49.7 days | Predicted from the code, not bench-tested |
+   | Storage | `MAX_DATA_ENTRIES = 15000` readings × 300 s | ~52.1 days | Certain (see item 5) |
+   | Battery | Never measured over a full deployment | Unknown | Unmeasured (item 3) |
+
+   The 52-day figure is **storage**, not battery life, and it is not the
+   practical limit.
+
+   What the rollover should do, from reading the logging loop in `loop()`:
+   - `nextWakeTime` runs up to 300 s ahead of `millis()`, so it wraps first.
+     While it is small and `currentTime` is still near 2³², the check
+     `nextWakeTime > currentTime` fails and the logger stops sleeping.
+   - Each reading takes at least 50 ms (the loop has a `delay(50)` plus the
+     sensor reads), so the logger records a burst of readings for up to
+     5 minutes: likely hundreds to a few thousand.
+   - Around day 49.7, about 14,300 of the 15,000 slots are already used, so the
+     burst will likely fill memory. If it doesn't, each burst reading has pushed
+     `nextWakeTime` another 300 s ahead. Once `millis()` wraps, the logger
+     would then sleep for days, leaving a gap.
+   - Stored timestamps stay correct: `elapsedSeconds` uses unsigned
+     subtraction, which survives the wrap. Only the *spacing* of readings is
+     affected.
+
+   **Fix (firmware change + re-flash):** compare with a wrap-safe signed
+   difference, `if ((int32_t)(nextWakeTime - currentTime) > 0)`, then
+   bench-test across the wrap. `millis()` can't be preset, so for the test add
+   a temporary offset of about 2³² − 10 minutes to every `millis()` reading in
+   the logging path.
+   Until then, don't plan deployments past about 49 days, and check the end of
+   any recording longer than 36 days carefully.
 2. **Detection thresholds and drift parameters** (§4) were tuned on a small
    amount of data.
 3. **Battery life and power draw** of the current sleep approach have not been
@@ -246,7 +274,7 @@ unstyled on offline machines. These files now ship under `assets/vendor/`:
      which may corrupt them.
    - `findHighestDataIndex` only scans the first 15,000 records, so anything
      after that is **never downloaded**.
-   - Treat about 52 days as the hard limit per deployment.
+   - In practice the clock rollover (item 1) ends reliable recording first.
 6. The frozen macOS build is unsigned. Gatekeeper will warn on first launch
    (right-click → Open).
 
