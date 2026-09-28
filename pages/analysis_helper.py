@@ -2,8 +2,6 @@ import base64
 import io
 import pandas as pd
 import numpy as np
-from scipy import sparse
-from scipy.sparse.linalg import spsolve
 
 from timezone_config import DISPLAY_TZ
 
@@ -158,27 +156,6 @@ def to_csv_with_metadata(df, metadata):
     lines = [f"{key},{value}" for key, value in (metadata or {}).items()]
     return '\r\n'.join(lines) + '\r\n' + df.to_csv(index=False, lineterminator='\r\n')
 
-
-def baseline_asls(y, lam=1e6, p=0.4, niter=20):
-    """
-    Asymmetric least squares smoothing for baseline estimation
-        y: input signal
-        lam: smoothing penalty parameter
-        p: noise level
-        niter: number of iterations
-
-    Returns the estimated baseline
-    """
-    n = len(y)
-    D = sparse.diags([1, -2, 1], [0, 1, 2], shape=(n-2, n))
-    w = np.ones(n)
-    for _ in range(niter):
-        W = sparse.spdiags(w, 0, n, n)
-        Z = W + lam * (D.T @ D)
-        z = spsolve(Z, w * y)
-        w = p * (y > z) + (1-p) * (y < z)
-
-    return z
 
 def _infer_interval_minutes(time_series, default=5.0):
     """
@@ -386,7 +363,7 @@ def prepare_gantt(onset_times, offset_times):
     } for day, seg_start, seg_end, onset, offset in _split_by_day(onset_times, offset_times)]
     return pd.DataFrame(rows, columns=['Date', 'StartHour', 'EndHour', 'Start', 'End'])
 
-def prepare_occurance_summary(onset_times, offset_times):
+def prepare_daily_summary(onset_times, offset_times):
     """
     Total wear minutes and event count per calendar day. Events spanning
     midnight are split so each day gets only its own share.

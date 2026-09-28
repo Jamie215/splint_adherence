@@ -72,7 +72,7 @@ def test_summary_splits_event_across_midnight():
     onset = pd.Series([pd.Timestamp("2026-01-01 23:00")])
     offset = pd.Series([pd.Timestamp("2026-01-02 01:30")])
 
-    summary = ah.prepare_occurance_summary(onset, offset)
+    summary = ah.prepare_daily_summary(onset, offset)
     assert list(summary["TotalDurationMin"]) == [60.0, 90.0]
     assert list(summary["EventCount"]) == [1, 1]
 
@@ -88,13 +88,13 @@ def test_summary_across_dst_uses_true_elapsed_minutes():
     tz = "America/New_York"
     onset = pd.Series([pd.Timestamp("2026-11-01 00:00").tz_localize(tz)])
     offset = pd.Series([pd.Timestamp("2026-11-01 03:00").tz_localize(tz)])
-    summary = ah.prepare_occurance_summary(onset, offset)
+    summary = ah.prepare_daily_summary(onset, offset)
     assert summary["TotalDurationMin"].iloc[0] == 240.0
 
 
 def test_empty_events_give_empty_summaries():
     empty = pd.Series([], dtype="datetime64[ns]")
-    summary = ah.prepare_occurance_summary(empty, empty)
+    summary = ah.prepare_daily_summary(empty, empty)
     gantt = ah.prepare_gantt(empty, empty)
     assert summary.empty and list(summary.columns) == ["Date", "TotalDurationMin", "EventCount"]
     assert gantt.empty and "StartHour" in gantt.columns

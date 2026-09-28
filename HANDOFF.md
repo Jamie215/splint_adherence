@@ -29,7 +29,8 @@ and what remains to be veritifed.
 | `app_instance.py` | Creates the shared Dash app, Flask server, and SocketIO objects. Works out where `assets/` is in both source and frozen builds. Lists the vendored stylesheets. |
 | `timezone_config.py` | `DISPLAY_TZ` (America/New_York). The only place the time zone is set. |
 | `arduino.py` | `ArduinoClient`: finds the port by handshake, packs and checksums the config, streams and parses the download. `format_epoch()` renders timestamps in Eastern time. |
-| `pages/index_page.py` | Home page with the Initialize and Download modal flows. |
+| `pages/index_page.py` | Home page with the Initialize and Download modal flows. `modal_content(mode, step)` renders each step of the modal. |
+| `pages/components.py` | Shared UI pieces: the Eastern date/hour/minute start-time pickers and status messages. |
 | `pages/data_analysis_page.py` | Upload, plots, events table, daily summary, and hour-of-day chart. |
 | `pages/analysis_helper.py` | Parsing, time zone conversion, drift-invariant proximity, onset/offset detection, and splitting events by day. |
 | `collect_temperature/collect_temperature.ino` | Logger firmware. |
@@ -142,7 +143,7 @@ The pipeline runs in `data_analysis_page.update_dashboard`:
      - **Offset**: the sensor is no longer covered, or the temperature is
        cooling fast and is either back near baseline or well below its peak.
      - Events shorter than 2 samples are dropped.
-4. `extract_peaks`, `prepare_occurance_summary`, `prepare_gantt`: find the peak
+4. `extract_peaks`, `prepare_daily_summary`, `prepare_gantt`: find the peak
    temperature of each event and split events at midnight (in Eastern time,
    DST-aware) into per-day totals and hour-of-day bars.
 
@@ -166,7 +167,6 @@ ground-truth wear logs (see §8).
 | `k` | `dedrift_proximity` | 4.0 | allow more noise and still call the sensor "covered" |
 | `min_excursion` | `dedrift_proximity` | 5.0 | set the minimum threshold for being "not covered" |
 
-`baseline_asls` (asymmetric least squares) is present but currently unused.
 
 ## 5. Recovering lost start times
 
@@ -275,8 +275,8 @@ python app.py         # http://127.0.0.1:8050
 1. Bump `version` in `setup.py` and merge to `main`.
 2. Tag and push:
    ```bash
-   git tag v1.2.0
-   git push origin v1.2.0
+   git tag v1.3.0
+   git push origin v1.3.0
    ```
 3. `build-release.yml` builds both bundles and attaches
    `Splint_Adherence-windows.zip` and `Splint_Adherence-macos.zip` to the

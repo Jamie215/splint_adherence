@@ -21,7 +21,6 @@ gevent-websocket==0.10.1  # WebSocket transport for Flask-SocketIO under gevent
 # Data / analysis
 numpy==2.0.0
 pandas==2.2.2
-scipy==1.15.2
 
 # Device communication
 pyserial==3.5

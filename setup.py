@@ -8,7 +8,7 @@ build_exe_options = {
     "includes": ["idna.idnadata"],
     # pytz and tzdata carry the time zone database used for Eastern time
     # (see timezone_config.py); list them so the frozen build bundles the data.
-    "packages": ['engineio','socketio','flask_socketio','threading', 'numpy', 'pandas', 'scipy',
+    "packages": ['engineio','socketio','flask_socketio','threading', 'numpy', 'pandas',
                  'pytz', 'tzdata']
 }
 
@@ -33,7 +33,7 @@ executables = [
 
 setup(
     name="Splint_Adherence",
-    version="1.2.0",
+    version="1.3.0",
     description="Splint Adherence Measurement Application",
     options={
         "build_exe": build_exe_options,
