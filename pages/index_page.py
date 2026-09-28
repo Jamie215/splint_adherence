@@ -11,6 +11,7 @@ import dash_bootstrap_components as dbc
 
 from app_instance import app
 import arduino
+import pages.analysis_helper as analysis_helper
 from timezone_config import DISPLAY_TZ
 
 logger = logging.getLogger(__name__)
@@ -63,7 +64,10 @@ def set_modal_content(initialize=False, selected_dt=None, download=False, error=
                 children=[
                     html.Div(id="download-file-status")
                 ]
-            )
+            ),
+            # Filled with a start-time prompt if the device lost its start time
+            html.Div(id="download-recovery"),
+            dcc.Store(id="download-raw-store")
         ]
     elif error:
         status_msg = [
@@ -236,6 +240,50 @@ def set_modal_content(initialize=False, selected_dt=None, download=False, error=
                 dbc.ModalBody(status_msg + initialize_view + download_view, id="modal-body"),
                 modal_footer
             ]
+
+def recovery_prompt():
+    """
+    Start-time prompt shown in the download modal when the device's logging
+    start time was lost, so the saved file gets real timestamps.
+    """
+    return html.Div([
+        html.Div([
+            html.I(className="fas fa-exclamation-triangle", style={"color": "darkorange"}),
+            html.B(" Start time missing", style={"color": "darkorange"}),
+        ]),
+        html.Div(
+            "The device lost its logging start time, but every reading and the time "
+            "between readings are intact. Enter the start date and time (Eastern) you chose "
+            "when initializing the device to save the file with real timestamps.",
+            className="mb-2"
+        ),
+        dbc.Row([
+            dbc.Col(html.Div([
+                html.Label("Date", className="dropdown-label"),
+                dcc.DatePickerSingle(id="dl-recovery-date", display_format="YYYY-MM-DD",
+                                     placeholder="Start date"),
+            ]), width=6),
+            dbc.Col(html.Div([
+                html.Label("Hour (24h, Eastern)", className="dropdown-label"),
+                dcc.Dropdown(id="dl-recovery-hour",
+                             options=[{"label": f"{i:02d}", "value": i} for i in range(24)],
+                             style={"width": "100px"}),
+            ]), width=3),
+            dbc.Col(html.Div([
+                html.Label("Minute", className="dropdown-label"),
+                dcc.Dropdown(id="dl-recovery-minute",
+                             options=[{"label": f"{i:02d}", "value": i} for i in range(60)],
+                             style={"width": "100px"}),
+            ]), width=3),
+        ], className="mb-2"),
+        html.Div([
+            dbc.Button([html.I(className="fas fa-file-download"), " Save Corrected File"],
+                       id="dl-recovery-save", className="recovery-btn"),
+            dbc.Button("Save Without Correcting", id="dl-recovery-save-raw",
+                       outline=True, color="secondary", className="ms-2"),
+        ]),
+        html.Div(id="dl-recovery-status", className="mt-2"),
+    ], className="mt-2")
 
 def index_layout():
     """
@@ -416,7 +464,9 @@ def register_index_callbacks():
             [Output("download-data", "data"),
             Output("download-filename", "style"),
             Output("download-file-status", "children"),
-            Output("download-btn", "disabled", allow_duplicate=True)],
+            Output("download-btn", "disabled", allow_duplicate=True),
+            Output("download-recovery", "children"),
+            Output("download-raw-store", "data")],
             [Input("download-filename", "value"),
             Input("download-btn", "n_clicks")],
             [State("action-modal-open-state", "data")],
@@ -439,16 +489,64 @@ def register_index_callbacks():
         if ctx.triggered and ctx.triggered[0]['prop_id'].endswith('.n_clicks'):
             if not filename or filename.strip() == "":
                 file_status = html.Div("Please enter a filename.", style={"color": "indianred"})
-                return (None, {"bordercolor": "red", "boxShadow": "0 0 0 0.25rem rgb(255 0 0 / 25%)"}, file_status, False)
+                return (None, {"bordercolor": "red", "boxShadow": "0 0 0 0.25rem rgb(255 0 0 / 25%)"}, file_status, False, None, None)
 
             filename = f"{filename}.csv"
             file_content = arduino.client.download(filename)
 
+            # Lost start time: hold the file and ask for the real start first.
+            _, metadata, error = analysis_helper.parse_text(file_content["content"])
+            if not error and analysis_helper.needs_timestamp_recovery(metadata):
+                return (None, {}, None, False, recovery_prompt(), file_content)
+
             # Update the file download status
             file_status = html.Div("Download Complete", style={"color": "mediumseagreen"})
-            return (file_content, {}, file_status, False)
+            return (file_content, {}, file_status, False, None, None)
 
-        return (None, {}, None, False)
+        return (None, {}, None, False, dash.no_update, dash.no_update)
+
+    @app.callback(
+            [Output("download-data", "data", allow_duplicate=True),
+            Output("dl-recovery-status", "children")],
+            [Input("dl-recovery-save", "n_clicks"),
+            Input("dl-recovery-save-raw", "n_clicks")],
+            [State("dl-recovery-date", "date"),
+            State("dl-recovery-hour", "value"),
+            State("dl-recovery-minute", "value"),
+            State("download-raw-store", "data")],
+            prevent_initial_call=True)
+    def save_recovered_download(save_click, save_raw_click, date, hour, minute, raw_file):
+        """
+        Save a device download whose start time was lost, either with timestamps
+        rebuilt from the start time entered in the prompt, or unchanged (it can
+        still be corrected later on the Data Analysis page).
+        """
+        if not raw_file or not (save_click or save_raw_click):
+            raise dash.exceptions.PreventUpdate
+
+        triggered_id = callback_context.triggered[0]["prop_id"].split(".")[0]
+        if triggered_id == "dl-recovery-save-raw":
+            return raw_file, html.Div(
+                "Saved uncorrected. You can rebuild the timestamps later on the Data Analysis page.",
+                style={"color": "mediumseagreen"})
+
+        # Hour and minute can legitimately be 0, so check for None explicitly.
+        if date is None or hour is None or minute is None:
+            return dash.no_update, html.Div("Please enter the start date, hour and minute.",
+                                            style={"color": "indianred"})
+
+        start = datetime.datetime.strptime(date[:10], "%Y-%m-%d").replace(
+            hour=int(hour), minute=int(minute))
+        df, metadata, error = analysis_helper.parse_text(raw_file["content"])
+        if error:
+            return dash.no_update, html.Div(error, style={"color": "indianred"})
+        df, metadata = analysis_helper.recover_timestamps(df, metadata, start)
+
+        corrected = dict(raw_file, content=analysis_helper.to_csv_with_metadata(df, metadata))
+        return corrected, html.Div(
+            f"Download Complete: timestamps rebuilt from {df['Timestamp'].iloc[0]} "
+            f"to {df['Timestamp'].iloc[-1]}.",
+            style={"color": "mediumseagreen"})
 
     @app.callback(
         Output("action-modal-open-state", "data", allow_duplicate=True),

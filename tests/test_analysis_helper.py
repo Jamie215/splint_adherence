@@ -1,5 +1,6 @@
 """Tests for the wear-detection and summary helpers (no hardware needed)."""
 import base64
+import io
 
 import numpy as np
 import pandas as pd
@@ -151,3 +152,65 @@ def test_detect_preserves_timezone_on_events():
     ts = ts.dt.tz_localize("America/New_York")
     events = _detect(ts, temp, prox)
     assert str(events["Onset"].dt.tz) == "America/New_York"
+
+
+# --- Recovering timestamps when the device lost its start time -------------
+
+def _lost_start_file(initial, row_times):
+    df = pd.DataFrame({"Timestamp": row_times,
+                       "Temperature": [30.0] * len(row_times),
+                       "ProximityVal": [0] * len(row_times)})
+    return df, {"Initial Timestamp": initial, "Personal ID": "UNKNOWN"}
+
+
+def test_detects_lost_start_in_legacy_and_eastern_downloads():
+    # Blank flash word 0xFFFFFFFF, as written by older app versions (naive UTC)
+    # and by this version (Eastern with an offset). Both must be detected.
+    assert ah.needs_timestamp_recovery({"Initial Timestamp": "2106-02-07 06:28:15"})
+    assert ah.needs_timestamp_recovery({"Initial Timestamp": "2106-02-07 01:28:15-05:00"})
+    assert ah.needs_timestamp_recovery({"Initial Timestamp": "UNKNOWN"})
+    assert not ah.needs_timestamp_recovery({"Initial Timestamp": "2026-01-01 08:00:00-05:00"})
+    assert not ah.needs_timestamp_recovery({"Initial Timestamp": "2026-01-01 13:00:00"})
+
+
+def test_recover_unknown_start_gives_eastern_timestamps():
+    # Current firmware: UNKNOWN start, rows are raw elapsed seconds, which the
+    # download renders as 1970 instants in Eastern time.
+    df, meta = _lost_start_file("UNKNOWN", ["1969-12-31 19:00:00-05:00",
+                                            "1969-12-31 19:05:00-05:00"])
+    out, meta = ah.recover_timestamps(df, meta, pd.Timestamp("2026-01-01 08:00"))
+    assert list(out["Timestamp"]) == ["2026-01-01 08:00:00-05:00",
+                                      "2026-01-01 08:05:00-05:00"]
+    assert meta["Initial Timestamp"] == "2026-01-01 08:00:00-05:00"
+    assert meta["Wake-up Interval (Seconds)"] == "300"
+    assert meta["Timezone"] == "America/New_York"
+    assert "Personal ID" not in meta
+
+
+def test_recover_legacy_blank_flash_file_and_dst_crossing():
+    # Older firmware + older app: start 0xFFFFFFFF, rows wrapped past 2^32 and
+    # written as naive UTC in 1970. Elapsed 0 s and 2 h.
+    df, meta = _lost_start_file("2106-02-07 06:28:15",
+                                ["2106-02-07 06:28:15", "1970-01-01 01:59:59"])
+    # Start just before the autumn DST change: 2 real hours later the wall
+    # clock reads 01:00 EST, not 02:00.
+    out, _ = ah.recover_timestamps(df, meta, pd.Timestamp("2026-11-01 00:00"))
+    assert list(out["Timestamp"]) == ["2026-11-01 00:00:00-04:00",
+                                      "2026-11-01 01:00:00-05:00"]
+
+
+def test_recovered_file_round_trips_through_analysis():
+    from arduino import ArduinoClient
+    raw = (b"Initial Timestamp,UNKNOWN\r\nWake-up Interval (Seconds),UNKNOWN\r\n"
+           b"Personal ID,UNKNOWN\r\nTimestamp,Temperature,ProximityVal\r\n"
+           b"0,30.0,0\r\n300,30.5,0\r\n")
+    buf = io.StringIO()
+    ArduinoClient._process_buffer_data(raw, buf, True)
+    df, meta, err = ah.parse_text(buf.getvalue())
+    assert err is None and ah.needs_timestamp_recovery(meta)
+
+    df, meta = ah.recover_timestamps(df, meta, pd.Timestamp("2026-07-01 09:30"))
+    df2, meta2, err = ah.parse_text(ah.to_csv_with_metadata(df, meta))
+    assert err is None and not ah.needs_timestamp_recovery(meta2)
+    local = ah.to_display_tz(df2["Timestamp"])
+    assert local.iloc[0].strftime("%Y-%m-%d %H:%M %Z") == "2026-07-01 09:30 EDT"

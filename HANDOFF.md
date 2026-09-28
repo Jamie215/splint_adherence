@@ -48,6 +48,7 @@ On every power-up the firmware switches between two modes, based on
 | `MODE_IDLE` and **no data** (just initialized) | Switches to **logging**. USB, UART and radio are powered down, and it samples every 300 s until flash is full. |
 | `MODE_LOGGING` | Switches to **idle**. USB serial is enabled and the device answers `? ! i r`. |
 | `MODE_IDLE` with data | Stays idle (serial). |
+| **No valid config** (fresh board, or just flashed over an older config format) | Stays idle (serial) until it is initialized. A download reports the start time as `UNKNOWN` and sends each row's raw elapsed seconds. |
 
 What this means in practice:
 
@@ -74,9 +75,15 @@ Serial protocol:
 ## 3. Firmware notes and hardware lessons
 
 **Flash layout:**
-- Config is at `0x70000`.
+- The config is kept **A/B** in two pages, at `0x70000` and `0x71000`. Each copy is a `ConfigRecord` with a magic number (`"SPLT"`), a sequence number and a CRC.
+- Every save writes to the page *not* holding the current config, so a reset during a save can't destroy the last good copy. The single-page layout this replaced could be blanked by exactly that kind of interrupted save.
 - Data starts at `0x80000`, as 12-byte `TemperatureData` records (with padding), up to `MAX_DATA_ENTRIES = 15000`.
 - At 300 s per sample, that is about **52 days** of capacity.
+
+**Re-flashing a device:**
+- Firmware built before the A/B config (before PR #10) stores its config in a format the current firmware doesn't recognize.
+- After such a re-flash the device has no valid config, and downloads report `UNKNOWN` start times.
+- **Download the data before re-flashing, then initialize again.**
 
 **Timestamps:** each record stores the seconds elapsed since logging started,
 measured with `millis()`. The app adds that to the initial epoch.
@@ -102,7 +109,7 @@ don't depend on this constant.
 
 **Build:** use the Arduino IDE with the Nano 33 BLE (mbed) board package and the
 `Arduino_APDS9960` and `Arduino_HS300x` libraries. Record the exact versions you
-use in the access checklist (§9).
+use in the access checklist (§10).
 
 ## 4. Analysis algorithm (`pages/analysis_helper.py`)
 
@@ -142,7 +149,7 @@ The pipeline runs in `data_analysis_page.update_dashboard`:
 ### Tunable parameters
 
 All of these are empirical. None have been checked against labeled
-ground-truth wear logs (see §7).
+ground-truth wear logs (see §8).
 
 | Parameter | Where | Value | Raising it will… |
 | --- | --- | --- | --- |
@@ -161,7 +168,24 @@ ground-truth wear logs (see §7).
 
 `baseline_asls` (asymmetric least squares) is present but currently unused.
 
-## 5. Time zone design
+## 5. Recovering lost start times
+
+If a device's config is lost, its readings and the elapsed seconds between
+them survive, but the start time does not. This happens with the blank
+`0xFFFFFFFF` word from older firmware, or when the current firmware reports
+`UNKNOWN`.
+
+- **Detection:** `analysis_helper.needs_timestamp_recovery` spots such files,
+  whether they came from an older app version (naive UTC) or this one (Eastern
+  with an offset).
+- **Where it's offered:** the Download modal and the Data Analysis page both
+  ask for the real start date and time, which is **Eastern time**.
+- **Rebuild:** `recover_timestamps` undoes the device's 32-bit `start +
+  elapsed` arithmetic and rebuilds each row as Eastern time with its offset.
+  DST changes are handled exactly.
+- **Saving:** the corrected file can be downloaded (`*_recovered.csv`).
+
+## 6. Time zone design
 
 - The device only stores UTC epochs; it has no notion of time zone.
 - **Initialize**: the date and time the researcher enters are treated as
@@ -177,7 +201,7 @@ ground-truth wear logs (see §7).
   versions of the app showed; that is expected.
 - To change the zone, edit `timezone_config.py`.
 
-## 6. Vendored front-end assets (offline support)
+## 7. Vendored front-end assets (offline support)
 
 The app used to load its fonts, theme and icons from CDNs, so it rendered
 unstyled on offline machines. These files now ship under `assets/vendor/`:
@@ -200,7 +224,7 @@ unstyled on offline machines. These files now ship under `assets/vendor/`:
 - **To check**: open the app with networking off. The home page icons and the
   Roboto font should render.
 
-## 7. Known limitations and unverified items
+## 8. Known limitations and unverified items
 
 These were known at handoff and **deliberately left unverified** because we
 ran out of time. Check them before relying on the results they affect.
@@ -234,7 +258,7 @@ ran out of time. Check them before relying on the results they affect.
 7. The frozen macOS build is unsigned. Gatekeeper will warn on first launch
    (right-click → Open).
 
-## 8. Build, test and release runbook
+## 9. Build, test and release runbook
 
 **Local development:**
 
@@ -269,7 +293,7 @@ python app.py         # http://127.0.0.1:8050
 To smoke-test a branch without releasing, go to Actions → "Build and Release" →
 "Run workflow". The zips appear as run artifacts.
 
-## 9. Access and ownership checklist
+## 10. Access and ownership checklist
 
 Fill these in before the handoff is complete:
 

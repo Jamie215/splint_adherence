@@ -1,3 +1,4 @@
+import datetime
 import io
 import json
 
@@ -122,9 +123,35 @@ data_analysis_layout = html.Div([
         'display': 'none'
     }),
     
+    # Timestamp recovery, shown when the device lost the logging start time
+    html.Div([
+        html.H4('Start Time Missing', style={'color': 'darkorange', 'marginBottom': '10px'}),
+        html.P(
+            "The device lost its logging start time, so the timestamps in this file "
+            "are wrong (dates in 1970 / 2106). The readings and the time between them "
+            "are intact. Enter the start date and time (Eastern) you chose when initializing "
+            "the device to rebuild the real timestamps."
+        ),
+        html.Div([
+            dcc.DatePickerSingle(id='recovery-date', display_format='YYYY-MM-DD',
+                                 placeholder='Start date'),
+            dcc.Input(id='recovery-time', type='text', placeholder='HH:MM (24h, Eastern)',
+                      debounce=True, style={'marginLeft': '10px', 'height': '48px'}),
+            html.Button('Rebuild Timestamps', id='recovery-apply', n_clicks=0,
+                        className='btn recovery-btn', style={'marginLeft': '10px'}),
+            html.Button('Download Corrected CSV', id='recovery-download-btn', n_clicks=0,
+                        className='btn recovery-btn', disabled=True,
+                        style={'marginLeft': '10px'}),
+        ], style={'display': 'flex', 'alignItems': 'center', 'flexWrap': 'wrap'}),
+        html.Div(id='recovery-status', style={'marginTop': '10px'}),
+        dcc.Download(id='recovery-download'),
+    ], id='recovery-panel', style={'display': 'none'}),
+
     # Add hidden storage components
     dcc.Store(id='df-value'),
     dcc.Store(id='metadata-value'),
+    dcc.Store(id='raw-df-value'),
+    dcc.Store(id='recovered-csv'),
 
     # Statistics and Graph Container
     html.Div(id='output-data', style={
@@ -143,16 +170,20 @@ data_analysis_layout = html.Div([
     [Output('file-info', 'children'),
      Output('file-info', 'style'),
      Output('df-value', 'data'),
-     Output('metadata-value', 'data')],
+     Output('metadata-value', 'data'),
+     Output('raw-df-value', 'data'),
+     Output('recovery-panel', 'style'),
+     Output('recovery-status', 'children'),
+     Output('recovered-csv', 'data'),
+     Output('recovery-download-btn', 'disabled')],
     [Input('upload-data', 'contents')],
     [State('upload-data', 'filename')]
 )
 def update_file_information(contents, filename):
+    hidden = {'display': 'none'}
     if contents is None:
-        return (html.Div(),
-                {'display': 'none'},
-                None, None)
-    
+        return (html.Div(), hidden, None, None, None, hidden, None, None, True)
+
     df, metadata, error = analysis_helper.parse_file(contents)
     if error:
         return (html.Div([
@@ -161,7 +192,7 @@ def update_file_information(contents, filename):
                 ]),
                 {'display': 'block', 'padding': '20px', 'backgroundColor': 'ghostwhite',
                  'borderRadius': '5px', 'marginBottom': '20px'},
-                None, None)
+                None, None, None, hidden, None, None, True)
     
     # Create file info display
     file_info = html.Div([
@@ -184,11 +215,80 @@ def update_file_information(contents, filename):
             ], style={'marginBottom': '5px'}))
         file_info.children.append(html.Div(metadata_rows))
     
-    return (file_info,
-            {'display': 'block', 'padding': '20px', 'backgroundColor': 'ghostwhite',
-             'borderRadius': '5px', 'marginBottom': '20px'},
-            df.to_json(date_format='iso', orient='split'),
-            json.dumps(metadata))
+    panel_style = {'display': 'block', 'padding': '20px', 'backgroundColor': 'ghostwhite',
+                   'borderRadius': '5px', 'marginBottom': '20px'}
+    df_json = df.to_json(date_format='iso', orient='split')
+
+    # Lost start time: hold the analysis until the user supplies the real start.
+    if analysis_helper.needs_timestamp_recovery(metadata):
+        return (file_info, panel_style, None, json.dumps(metadata), df_json,
+                {**panel_style, 'border': '1px solid darkorange'}, None, None, True)
+
+    return (file_info, panel_style, df_json, json.dumps(metadata),
+            None, hidden, None, None, True)
+
+
+# Callback - Rebuild timestamps from a user-supplied start time
+@app.callback(
+    [Output('df-value', 'data', allow_duplicate=True),
+     Output('recovery-status', 'children', allow_duplicate=True),
+     Output('recovered-csv', 'data', allow_duplicate=True),
+     Output('recovery-download-btn', 'disabled', allow_duplicate=True)],
+    [Input('recovery-apply', 'n_clicks')],
+    [State('recovery-date', 'date'),
+     State('recovery-time', 'value'),
+     State('raw-df-value', 'data'),
+     State('metadata-value', 'data')],
+    prevent_initial_call=True
+)
+def apply_timestamp_recovery(n_clicks, date, time_str, raw_json, metadata_json):
+    if not n_clicks or not raw_json:
+        return None, None, None, True
+
+    def error(msg):
+        return None, html.Span(msg, style={'color': 'indianred'}), None, True
+
+    if not date or not time_str:
+        return error("Please enter both the start date and time.")
+    start = None
+    for fmt in ('%H:%M', '%H:%M:%S'):
+        try:
+            start = datetime.datetime.strptime(f"{date[:10]} {time_str.strip()}", f"%Y-%m-%d {fmt}")
+            break
+        except ValueError:
+            continue
+    if start is None:
+        return error("Time must be in 24-hour HH:MM format, e.g. 14:30.")
+
+    try:
+        df = pd.read_json(io.StringIO(raw_json), orient='split', convert_dates=False)
+        metadata = json.loads(metadata_json) if metadata_json else {}
+        df, metadata = analysis_helper.recover_timestamps(df, metadata, start)
+    except Exception as e:
+        return error(f"Could not rebuild timestamps: {e}")
+
+    status = html.Span(
+        f"Timestamps rebuilt: {df['Timestamp'].iloc[0]} to {df['Timestamp'].iloc[-1]} "
+        f"({len(df)} readings).",
+        style={'color': 'mediumseagreen'}
+    )
+    csv_text = analysis_helper.to_csv_with_metadata(df, metadata)
+    return df.to_json(date_format='iso', orient='split'), status, csv_text, False
+
+
+# Callback - Download the file with rebuilt timestamps
+@app.callback(
+    Output('recovery-download', 'data'),
+    [Input('recovery-download-btn', 'n_clicks')],
+    [State('recovered-csv', 'data'),
+     State('upload-data', 'filename')],
+    prevent_initial_call=True
+)
+def download_recovered_csv(n_clicks, csv_text, filename):
+    if not n_clicks or not csv_text:
+        return None
+    base = (filename or 'data.csv').rsplit('.', 1)[0]
+    return dict(content=csv_text, filename=f"{base}_recovered.csv", type='text/csv')
 
 # Callback #2 - Generate basic information after file upload
 @app.callback(

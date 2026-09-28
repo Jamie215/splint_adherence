@@ -1,3 +1,4 @@
+#include <stddef.h>
 #include <Wire.h>
 #include <FlashIAP.h>
 #include <Arduino_APDS9960.h>
@@ -7,7 +8,14 @@ using namespace mbed;
 
 // Flash storage parameters
 #define FLASH_PAGE_SIZE          4096
-#define CONFIG_ADDRESS           0x70000
+// The config is kept in two flash pages (A/B). Each save goes to the page NOT
+// holding the current config, so an erase/program interrupted by a reset or
+// power loss can only damage the copy being written -- the previous copy stays
+// valid. Without this, the ~100 ms between erase and program left the config
+// page blank (all 0xFF) and every timestamp in the download was lost.
+#define CONFIG_ADDRESS_A         0x70000
+#define CONFIG_ADDRESS_B         0x71000
+#define CONFIG_MAGIC             0x53504C54  // "SPLT"
 #define DATA_START_ADDRESS       0x80000
 #define MAX_DATA_ENTRIES         15000
 #define END_DATA_MARKER "END_DATA"
@@ -24,6 +32,19 @@ struct ConfigData {
     uint32_t wakeupInterval;     // Seconds between readings
     char personalId[16];         // User identifier
     OperationMode mode;          // Current operation mode
+};
+
+// On-flash form of ConfigData: fixed-width fields plus a magic, a sequence
+// number (the higher valid one wins) and a CRC so a blank or half-written page
+// is never mistaken for a real config.
+struct ConfigRecord {
+    uint32_t magic;
+    uint32_t sequence;
+    uint32_t initialTimestamp;
+    uint32_t wakeupInterval;
+    char personalId[16];
+    uint32_t mode;
+    uint32_t crc;
 };
 
 struct InitializationData {
@@ -47,6 +68,10 @@ ConfigData config = {
     MODE_IDLE,
 };
 
+bool configValid = false;        // A valid config was loaded or saved
+uint32_t configSequence = 0;     // Sequence number of the active config copy
+uint32_t configAddress = 0;      // Page holding the active config copy (0 = none)
+
 uint32_t currentIndex = 0;
 uint32_t startMillis = 0;       // Track when logging started
 OperationMode currentMode = MODE_IDLE;
@@ -63,6 +88,7 @@ FlashIAP flash;
 #define PROX_WAIT_TIMEOUT_MS  1000
 
 // Function declarations
+bool loadConfig();
 bool saveConfig();
 bool saveTemperatureReading(float temperature, uint8_t proximityVal, uint32_t elapsedSeconds);
 bool initializeDevice(const uint8_t* packedData);
@@ -71,19 +97,94 @@ void sendReadableData();
 void processSerialCommand();
 uint8_t readProximitySettled(bool &ready);
 
-bool saveConfig() {
-    int result = flash.erase(CONFIG_ADDRESS, FLASH_PAGE_SIZE);
-    if (result != 0) return false;
-    
-    result = flash.program(&config, CONFIG_ADDRESS, sizeof(ConfigData));
-    if (result != 0) return false;
+uint32_t crc32(const uint8_t* data, size_t len) {
+    uint32_t crc = 0xFFFFFFFF;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (int b = 0; b < 8; b++) {
+            crc = (crc >> 1) ^ (0xEDB88320 & (0 - (crc & 1)));
+        }
+    }
+    return ~crc;
+}
 
-    ConfigData verifyConfig;
-    if (flash.read(&verifyConfig, CONFIG_ADDRESS, sizeof(ConfigData)) != 0 ||
-        memcmp(&config, &verifyConfig, sizeof(ConfigData)) != 0) {
+uint32_t configRecordCrc(const ConfigRecord& rec) {
+    return crc32((const uint8_t*)&rec, offsetof(ConfigRecord, crc));
+}
+
+bool readConfigRecord(uint32_t address, ConfigRecord& rec) {
+    if (flash.read(&rec, address, sizeof(ConfigRecord)) != 0) return false;
+    return rec.magic == CONFIG_MAGIC &&
+           rec.mode <= MODE_LOGGING &&
+           rec.crc == configRecordCrc(rec);
+}
+
+// Load the newest valid config copy into `config`. Returns false (and leaves
+// the in-RAM defaults) if neither page holds a valid config.
+bool loadConfig() {
+    ConfigRecord a, b;
+    bool aValid = readConfigRecord(CONFIG_ADDRESS_A, a);
+    bool bValid = readConfigRecord(CONFIG_ADDRESS_B, b);
+
+    const ConfigRecord* rec = nullptr;
+    if (aValid && bValid) {
+        // Wrap-safe "b is newer than a"
+        bool bNewer = (int32_t)(b.sequence - a.sequence) > 0;
+        rec = bNewer ? &b : &a;
+        configAddress = bNewer ? CONFIG_ADDRESS_B : CONFIG_ADDRESS_A;
+    } else if (aValid) {
+        rec = &a;
+        configAddress = CONFIG_ADDRESS_A;
+    } else if (bValid) {
+        rec = &b;
+        configAddress = CONFIG_ADDRESS_B;
+    } else {
+        configAddress = 0;
+        configValid = false;
         return false;
     }
-    
+
+    config.initialTimestamp = rec->initialTimestamp;
+    config.wakeupInterval = rec->wakeupInterval;
+    memcpy(config.personalId, rec->personalId, sizeof(config.personalId));
+    config.personalId[sizeof(config.personalId) - 1] = '\0';
+    config.mode = (OperationMode)rec->mode;
+    configSequence = rec->sequence;
+    configValid = true;
+    return true;
+}
+
+// Write `config` to the page not holding the active copy, so the active copy
+// survives if this write is interrupted.
+bool saveConfig() {
+    uint32_t target = (configAddress == CONFIG_ADDRESS_A) ? CONFIG_ADDRESS_B : CONFIG_ADDRESS_A;
+
+    ConfigRecord rec;
+    memset(&rec, 0, sizeof(rec));
+    rec.magic = CONFIG_MAGIC;
+    rec.sequence = configSequence + 1;
+    rec.initialTimestamp = config.initialTimestamp;
+    rec.wakeupInterval = config.wakeupInterval;
+    memcpy(rec.personalId, config.personalId, sizeof(rec.personalId));
+    rec.personalId[sizeof(rec.personalId) - 1] = '\0';
+    rec.mode = (uint32_t)config.mode;
+    rec.crc = configRecordCrc(rec);
+
+    int result = flash.erase(target, FLASH_PAGE_SIZE);
+    if (result != 0) return false;
+
+    result = flash.program(&rec, target, sizeof(ConfigRecord));
+    if (result != 0) return false;
+
+    ConfigRecord verifyRec;
+    if (flash.read(&verifyRec, target, sizeof(ConfigRecord)) != 0 ||
+        memcmp(&rec, &verifyRec, sizeof(ConfigRecord)) != 0) {
+        return false;
+    }
+
+    configAddress = target;
+    configSequence = rec.sequence;
+    configValid = true;
     return true;
 }
 
@@ -169,14 +270,20 @@ uint32_t findHighestDataIndex() {
 }
 
 void sendReadableData() {
+    // Without a valid config the start time is unknown: report UNKNOWN and send
+    // each row's raw elapsed seconds (a start time of 0) so the interface can
+    // rebuild real timestamps from a start time the user supplies.
     Serial.print("Initial Timestamp,");
-    Serial.println(config.initialTimestamp);
-    
+    if (configValid) Serial.println(config.initialTimestamp);
+    else Serial.println("UNKNOWN");
+
     Serial.print("Wake-up Interval (Seconds),");
-    Serial.println(config.wakeupInterval);
-    
+    if (configValid) Serial.println(config.wakeupInterval);
+    else Serial.println("UNKNOWN");
+
     Serial.print("Personal ID,");
-    Serial.println(config.personalId);
+    if (configValid) Serial.println(config.personalId);
+    else Serial.println("UNKNOWN");
     
     // Header indicates elapsed seconds
     Serial.println("Timestamp,Temperature,ProximityVal");
@@ -194,7 +301,7 @@ void sendReadableData() {
         }
         
         // Calculate actual timestamp from elapsed seconds
-        uint32_t timestamp = config.initialTimestamp + data.elapsedSeconds;
+        uint32_t timestamp = (configValid ? config.initialTimestamp : 0) + data.elapsedSeconds;
         
         Serial.print(timestamp);
         Serial.print(",");
@@ -293,17 +400,20 @@ void setup() {
     #endif
 
     if (flash.init() != 0) {
+        // Don't save here: writing a default config would replace the real one
+        // (and its start time) with a valid-looking record.
         currentMode = MODE_IDLE;
-        saveConfig();
         Serial.println("Flash initialization failed");
         return;
     }
     
-    flash.read(&config, CONFIG_ADDRESS, sizeof(ConfigData));
+    // No valid config (fresh board, or flashed over an older firmware's config
+    // format) leaves the device idle until it is initialized from the interface.
+    bool haveConfig = loadConfig();
     currentIndex = findHighestDataIndex();
-    
+
     // Mode transitions
-    if (config.mode == MODE_IDLE && currentIndex == 0) {
+    if (haveConfig && config.mode == MODE_IDLE && currentIndex == 0) {
         config.mode = MODE_LOGGING;
         saveConfig();
 
@@ -344,7 +454,7 @@ void setup() {
         // Record start time so elapsed seconds are measured from logging start
         startMillis = millis();
         
-    } else if (config.mode == MODE_LOGGING) {
+    } else if (haveConfig && config.mode == MODE_LOGGING) {
         config.mode = MODE_IDLE;
         saveConfig();
 

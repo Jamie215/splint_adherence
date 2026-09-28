@@ -16,8 +16,15 @@ def parse_file(contents):
     decoded = base64.b64decode(content_string)
     
     try:
-        # Read file as text
-        file_content = decoded.decode('utf-8')
+        return parse_text(decoded.decode('utf-8'))
+    except Exception as e:
+        return None, {}, f"Could not parse file: {str(e)}"
+
+def parse_text(file_content):
+    """
+    Parse CSV text (metadata lines, then the data table) into (df, metadata, error).
+    """
+    try:
         lines = file_content.strip().split('\n')
         
         # Find where the data table starts (line with headers)
@@ -60,6 +67,97 @@ def to_display_tz(time_series):
     the same Eastern clock as new ones.
     """
     return pd.to_datetime(time_series, utc=True).dt.tz_convert(DISPLAY_TZ)
+
+# The device computes each row's timestamp as (initial timestamp + elapsed
+# seconds) in 32-bit arithmetic. If its config was lost, the initial timestamp
+# is either a blank flash word (0xFFFFFFFF -> 2106-02-07 06:28:15, older
+# firmware) or reported as UNKNOWN (current firmware, which then sends a start
+# of 0). In both cases the elapsed seconds survive and the real timestamps can
+# be rebuilt from a start time supplied by the user.
+_BLANK_FLASH_WORD = 0xFFFFFFFF
+_EPOCH_UTC = pd.Timestamp('1970-01-01', tz='UTC')
+
+
+def _utc_epochs(time_series):
+    """
+    Epoch seconds for a column of timestamp strings. Values with a UTC offset
+    (current downloads, in Eastern time) are converted exactly; naive values
+    (older downloads) were written in UTC.
+    """
+    return ((pd.to_datetime(time_series, utc=True) - _EPOCH_UTC)
+            .dt.total_seconds().round().astype('int64'))
+
+
+def _format_local(ts):
+    """Format a tz-aware timestamp like a device download: Eastern with offset."""
+    return ts.tz_convert(DISPLAY_TZ).isoformat(sep=' ')
+
+
+def _lost_start_epoch(metadata):
+    """
+    Return the epoch the device used in place of the lost start time
+    (0xFFFFFFFF or 0), or None if the file's start time looks valid.
+    """
+    initial = str((metadata or {}).get('Initial Timestamp', '')).strip()
+    if initial.upper() == 'UNKNOWN':
+        return 0
+    if initial.isdigit():
+        epoch = int(initial)
+    else:
+        try:
+            epoch = int(_utc_epochs(pd.Series([initial])).iloc[0])
+        except (ValueError, TypeError):
+            return None
+    return epoch if epoch == _BLANK_FLASH_WORD else None
+
+
+def needs_timestamp_recovery(metadata):
+    """True if the file's start time was lost on the device."""
+    return _lost_start_epoch(metadata) is not None
+
+
+def recover_timestamps(df, metadata, start_time):
+    """
+    Rebuild real timestamps for a file whose start time was lost on the device.
+
+    Each row's elapsed time since logging started is recovered by undoing the
+    device's 32-bit (placeholder start + elapsed) addition, then added to
+    `start_time`, the actual time the device was initialized to start logging.
+    A naive `start_time` is Eastern wall-clock time, as entered in the app; the
+    rebuilt timestamps are written in Eastern time with their UTC offset, like a
+    normal download.
+
+    Returns (df, metadata) copies with corrected timestamps and header.
+    """
+    placeholder = _lost_start_epoch(metadata)
+    if placeholder is None:
+        return df, metadata
+
+    start = pd.Timestamp(start_time)
+    start = start.tz_localize(DISPLAY_TZ) if start.tzinfo is None else start.tz_convert(DISPLAY_TZ)
+    elapsed = (_utc_epochs(df['Timestamp']) - placeholder) % (1 << 32)
+
+    df = df.copy()
+    # Adding elapsed time to a tz-aware start is exact across DST changes.
+    df['Timestamp'] = (start + pd.to_timedelta(elapsed, unit='s')).map(_format_local)
+
+    metadata = dict(metadata)
+    metadata['Initial Timestamp'] = _format_local(start)
+    # The configured interval was lost too; report the one the data shows.
+    if len(elapsed) > 1:
+        metadata['Wake-up Interval (Seconds)'] = str(int(elapsed.diff().median()))
+    if metadata.get('Personal ID', 'UNKNOWN') == 'UNKNOWN':
+        metadata.pop('Personal ID', None)
+    metadata['Timezone'] = DISPLAY_TZ.zone
+    metadata['Timestamp Recovery'] = 'Start time entered manually'
+    return df, metadata
+
+
+def to_csv_with_metadata(df, metadata):
+    """Serialize back to the device download format (metadata lines, then data)."""
+    lines = [f"{key},{value}" for key, value in (metadata or {}).items()]
+    return '\r\n'.join(lines) + '\r\n' + df.to_csv(index=False, lineterminator='\r\n')
+
 
 def baseline_asls(y, lam=1e6, p=0.4, niter=20):
     """
