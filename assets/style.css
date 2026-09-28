@@ -163,7 +163,22 @@ body {
     color: white
 }
 
-.initialize-btn:hover, .download-btn:hover, .merge-btn:hover{
+/* Buttons for rebuilding lost timestamps and saving the corrected file */
+.recovery-btn {
+    background-color: steelblue;
+    border-color: steelblue;
+    font-size: 16px;
+    color: white;
+}
+
+.recovery-btn:disabled {
+    background-color: steelblue;
+    border-color: steelblue;
+    color: white;
+    opacity: 0.5;
+}
+
+.initialize-btn:hover, .download-btn:hover, .merge-btn:hover, .recovery-btn:hover {
     background-color: midnightblue;
 }
 

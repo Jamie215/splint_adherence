@@ -14,8 +14,15 @@ def parse_file(contents):
     decoded = base64.b64decode(content_string)
     
     try:
-        # Read file as text
-        file_content = decoded.decode('utf-8')
+        return parse_text(decoded.decode('utf-8'))
+    except Exception as e:
+        return None, {}, f"Could not parse file: {str(e)}"
+
+def parse_text(file_content):
+    """
+    Parse CSV text (metadata lines, then the data table) into (df, metadata, error).
+    """
+    try:
         lines = file_content.strip().split('\n')
         
         # Find where the data table starts (line with headers)
