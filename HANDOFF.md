@@ -1,12 +1,10 @@
 # Developer Handoff — Splint Adherence
 
-This is the technical handoff for whoever maintains this project next. The
+This is the technical handoff document for whoever maintains this project. The
 [README](README.md) covers installing and using the app. This document covers
 how it works inside, why it was built this way, what has already been tried,
-and what is still unverified.
+and what remains to be veritifed.
 
-> A plain-language guide for researchers who run devices and analyze data is
-> kept separately as a shared document.
 
 ---
 
@@ -93,23 +91,21 @@ measured with `millis()`. The app adds that to the initial epoch.
 works out the actual sampling rate from the timestamps, so its time windows
 don't depend on this constant.
 
-**Lessons already learned on hardware (don't repeat these):**
+**Findings:**
 - **Don't disable SPI0/SPI1 in logging mode.** On the nRF52840 they share
   hardware with the I2C controllers the sensors use. Disabling them kills the
   bus, the proximity read hangs, and nothing gets logged (fixed in `c32bda4`).
 - **The RTC2 + `__WFI` low-power sleep was tried and reverted** (`b0cdfce` →
   `c153218`). The current approach is peripheral power-down plus `delay()`,
   measured at about 750 µA resting (`23134ae`).
-- **Choosing the mode from USB presence was tried and reverted** (`7ca502c` →
-  `977a641`). The persisted toggle is the version known to work.
 - **Proximity reads discard warm-up samples.** `PROX_WARMUP_SAMPLES = 2`, and
   every wait is bounded by `PROX_WAIT_TIMEOUT_MS`. A stuck or missing sensor
   logs `0` instead of hanging the logger.
 - **Baud rate:** 9600 on both sides. The native USB port ignores it.
 
 **Build:** use the Arduino IDE with the Nano 33 BLE (mbed) board package and the
-`Arduino_APDS9960` and `Arduino_HS300x` libraries. Record the exact versions you
-use in the access checklist (§10).
+`Arduino_APDS9960` and `Arduino_HS300x` libraries. Note the exact versions you
+use when you flash devices.
 
 ## 4. Analysis algorithm (`pages/analysis_helper.py`)
 
@@ -201,8 +197,7 @@ them survive, but the start time does not. This happens with the blank
   versions of the app showed; that is expected.
 - To change the zone, edit `timezone_config.py`.
 
-## 7. Vendored front-end assets (offline support)
-
+## 7. Vendored front-end assets
 The app used to load its fonts, theme and icons from CDNs, so it rendered
 unstyled on offline machines. These files now ship under `assets/vendor/`:
 
@@ -226,9 +221,6 @@ unstyled on offline machines. These files now ship under `assets/vendor/`:
 
 ## 8. Known limitations and unverified items
 
-These were known at handoff and **deliberately left unverified** because we
-ran out of time. Check them before relying on the results they affect.
-
 1. **`millis()` wraps around at about 49.7 days.**
    - The logger's sleep calculation compares `nextWakeTime > currentTime`.
      Near the wraparound it may skip sleeping and log a burst of samples
@@ -238,8 +230,7 @@ ran out of time. Check them before relying on the results they affect.
      spacing between samples is at risk.
    - Bench-test before any deployment longer than about 45 days.
 2. **Detection thresholds and drift parameters** (§4) were tuned on a small
-   amount of data. The drift fix was validated on a single 35-day recording.
-   No labeled ground truth (for example, wear diaries) is stored in the repo.
+   amount of data.
 3. **Personal ID**: the UI accepts integers 0–65535, but the firmware stores a
    15-character string. The two are compatible, but alphanumeric IDs would
    need a UI change.
@@ -292,14 +283,3 @@ python app.py         # http://127.0.0.1:8050
 
 To smoke-test a branch without releasing, go to Actions → "Build and Release" →
 "Run workflow". The zips appear as run artifacts.
-
-## 10. Access and ownership checklist
-
-Fill these in before the handoff is complete:
-
-- [ ] GitHub: new owner has admin on `Jamie215/splint_adherence` (or the repo has been transferred)
-- [ ] Location of raw and processed datasets (not in the repo): ______
-- [ ] Data-handling / ethics (IRB) constraints for patient data: ______
-- [ ] Hardware inventory (boards, splints, cables, spares) and where it lives: ______
-- [ ] Arduino IDE, board package and library versions used for the deployed firmware: ______
-- [ ] Contacts: clinical lead ______, previous developer ______
