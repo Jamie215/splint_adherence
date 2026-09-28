@@ -5,13 +5,13 @@ import datetime
 import json
 import logging
 
-import pytz
 from dash import dcc, html, Input, Output, State, callback_context
 import dash
 import dash_bootstrap_components as dbc
 
 from app_instance import app
 import arduino
+from timezone_config import DISPLAY_TZ
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +88,8 @@ def set_modal_content(initialize=False, selected_dt=None, download=False, error=
     else:
         status_msg = [html.Div("Please connect Arduino to computer.", className="mb-2")]
 
-    curr_date = datetime.datetime.now()
+    # Pre-fill with the current Eastern time, independent of the PC's own zone.
+    curr_date = datetime.datetime.now(DISPLAY_TZ)
     initialize_view = [
         dbc.Row([
             dbc.Col(
@@ -112,7 +113,7 @@ def set_modal_content(initialize=False, selected_dt=None, download=False, error=
             dbc.Col(
                 html.Div([
                     html.Label(
-                        "Hour (24)",
+                        "Hour (24h, Eastern)",
                         className="dropdown-label",
                         style={"display": "none"} if not initialize else {}
                     ),
@@ -371,15 +372,19 @@ def register_index_callbacks():
                     selected_datetime = datetime.datetime.strptime(date, "%Y-%m-%d")
                     selected_datetime = selected_datetime.replace(hour=int(hour), minute=int(minute))
 
-                    timezone = pytz.timezone("UTC")
+                    # The entered time is Eastern wall-clock time (DST-aware); the
+                    # device stores the equivalent UTC epoch.
+                    selected_datetime = DISPLAY_TZ.localize(selected_datetime)
+                    epoch_time = int(selected_datetime.timestamp())
 
-                    selected_datetime = timezone.localize(selected_datetime)
-                    epoch_time = int(selected_datetime.astimezone(pytz.utc).timestamp())
-                    
                     # Send initialization command to Arduino
-                    arduino.client.initialize(epoch_time, int(personal_id))
+                    success, message = arduino.client.initialize(epoch_time, int(personal_id))
+                    if not success:
+                        updated_children = [curr_children[0]]
+                        updated_children.extend(set_modal_content(error=message))
+                        return True, updated_children, json.dumps({"is_open": True})
 
-                    formatted_dt = selected_datetime.strftime("%A, %B %d at %I:%M %p")
+                    formatted_dt = selected_datetime.strftime("%A, %B %d at %I:%M %p %Z")
                     updated_children = [curr_children[0]]
                     updated_children.extend(set_modal_content(selected_dt=formatted_dt))
                     return True, updated_children, json.dumps({"is_open": True})

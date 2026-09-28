@@ -15,6 +15,12 @@ from app_instance import app
 import pages.analysis_helper as analysis_helper
 
 
+def _format_times(events_df):
+    """Render the Start/End columns as readable Eastern times for the table."""
+    return events_df.assign(**{
+        col: events_df[col].dt.strftime('%Y-%m-%d %H:%M %Z') for col in ('Start', 'End')
+    })
+
 def build_combined_figure(df, baseline, delta):
     """
     Build the combined temperature/proximity/baseline/delta figure shared by
@@ -58,7 +64,7 @@ def build_combined_figure(df, baseline, delta):
         secondary_y=False
     )
 
-    fig.update_xaxes(title_text="Time")
+    fig.update_xaxes(title_text="Time (Eastern)")
     fig.update_yaxes(title_text="Proximity Value", secondary_y=True, color='red')
     fig.update_yaxes(title_text="Temperature (°C)", secondary_y=False)
     fig.update_layout(
@@ -196,7 +202,8 @@ def update_dashboard(json_data):
         ])]
     try:
         df = pd.read_json(io.StringIO(json_data), orient='split')
-        df['Timestamp'] = pd.to_datetime(df['Timestamp'])
+        # Tz-aware Eastern time (legacy naive-UTC files are converted too).
+        df['Timestamp'] = analysis_helper.to_display_tz(df['Timestamp'])
         df['Temperature'] = pd.to_numeric(df['Temperature'])
         # Older-version datasets have no ProximityVal column; default it to 0.
         if 'ProximityVal' in df.columns:
@@ -211,6 +218,9 @@ def update_dashboard(json_data):
         ])]
 
     time_col = df["Timestamp"]
+    # Plotly is given naive Eastern wall-clock times so axes and hovers read in
+    # Eastern time rather than being shifted by the browser or by plotly.
+    plot_df = df.assign(Timestamp=time_col.dt.tz_localize(None))
     temp_col = df["Temperature"]
     prox_col = df['ProximityVal']
     
@@ -224,7 +234,7 @@ def update_dashboard(json_data):
         # No peak detected
         if events_df.empty:
             # No events detected - create basic plots without peak annotations
-            combined_fig = build_combined_figure(df, baseline, delta)
+            combined_fig = build_combined_figure(plot_df, baseline, delta)
 
             return [html.Div([
                 html.Hr(style={'margin': '20px 0'}),
@@ -255,15 +265,15 @@ def update_dashboard(json_data):
                     .reset_index(drop=True)
         )
 
-        combined_fig = build_combined_figure(df, baseline, delta)
+        combined_fig = build_combined_figure(plot_df, baseline, delta)
         for _, row in peak_events_df.iterrows():
-            combined_fig.add_vrect(x0=row['Start'], x1=row['End'],
+            combined_fig.add_vrect(x0=row['Start'].tz_localize(None), x1=row['End'].tz_localize(None),
                               fillcolor="LightGreen", opacity=0.3,
                               layer="below", line_width=0)
 
         peaks_table = html.Div([
             DataTable(
-                data=peak_events_df.to_dict('records'),
+                data=_format_times(peak_events_df).to_dict('records'),
                 columns=[{"name": i, "id": i} for i in peak_events_df.columns],
                 style_table={'overflowX': 'auto'},
                 style_cell={'textAlign': 'left', 'padding': '5px'},
@@ -281,8 +291,8 @@ def update_dashboard(json_data):
                 y=[row['StartHour'], row['EndHour']],
                 mode='lines',
                 hovertemplate=(
-                    f"Start: {row['Start']}<br>"
-                    f"End: {row['End']}<extra></extra>"
+                    f"Start: {row['Start']:%Y-%m-%d %H:%M %Z}<br>"
+                    f"End: {row['End']:%Y-%m-%d %H:%M %Z}<extra></extra>"
                 ),
                 line=dict(color='mediumseagreen', width=10),
                 showlegend=False
@@ -312,8 +322,8 @@ def update_dashboard(json_data):
                 type='category',
             ),
             yaxis=dict(
-                title='Hour of Day (24H)',
-                range=[23, 0],
+                title='Hour of Day (24H, Eastern)',
+                range=[24, 0],  # full day, so events up to midnight are visible
                 dtick=1
             ),
             hoverlabel=dict(
@@ -333,7 +343,7 @@ def update_dashboard(json_data):
             x0=0,
             x1=1,
             y0=12,
-            y1=23,
+            y1=24,
             fillcolor="rgba(200, 200, 200, 0.3)",  # adjust color/opacity as needed
             layer="below",
             line_width=0

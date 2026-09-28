@@ -341,7 +341,7 @@ void setup() {
         digitalWrite(LEDG, HIGH);
         digitalWrite(LEDB, HIGH);
         
-        // FIXED: Record start time for accurate timing
+        // Record start time so elapsed seconds are measured from logging start
         startMillis = millis();
         
     } else if (config.mode == MODE_LOGGING) {
