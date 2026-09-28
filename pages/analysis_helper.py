@@ -14,8 +14,15 @@ def parse_file(contents):
     decoded = base64.b64decode(content_string)
     
     try:
-        # Read file as text
-        file_content = decoded.decode('utf-8')
+        return parse_text(decoded.decode('utf-8'))
+    except Exception as e:
+        return None, {}, f"Could not parse file: {str(e)}"
+
+def parse_text(file_content):
+    """
+    Parse CSV text (metadata lines, then the data table) into (df, metadata, error).
+    """
+    try:
         lines = file_content.strip().split('\n')
         
         # Find where the data table starts (line with headers)
@@ -42,6 +49,79 @@ def parse_file(contents):
         
     except Exception as e:
         return None, {}, f"Could not parse file: {str(e)}"
+
+# The device computes each row's timestamp as (initial timestamp + elapsed
+# seconds) in 32-bit arithmetic. If its config was lost, the initial timestamp
+# is either a blank flash word (0xFFFFFFFF -> 2106-02-07 06:28:15, older
+# firmware) or reported as UNKNOWN (current firmware, which then sends a start
+# of 0). In both cases the elapsed seconds survive and the real timestamps can
+# be rebuilt from a start time supplied by the user.
+_BLANK_FLASH_WORD = 0xFFFFFFFF
+_TIMESTAMP_FORMAT = '%Y-%m-%d %H:%M:%S'
+_EPOCH = pd.Timestamp('1970-01-01')
+
+
+def _lost_start_epoch(metadata):
+    """
+    Return the epoch the device used in place of the lost start time
+    (0xFFFFFFFF or 0), or None if the file's start time looks valid.
+    """
+    initial = str((metadata or {}).get('Initial Timestamp', '')).strip()
+    if initial.upper() == 'UNKNOWN':
+        return 0
+    if initial.isdigit():
+        epoch = int(initial)
+    else:
+        try:
+            epoch = int((pd.Timestamp(initial) - _EPOCH).total_seconds())
+        except (ValueError, TypeError):
+            return None
+    return epoch if epoch == _BLANK_FLASH_WORD else None
+
+
+def needs_timestamp_recovery(metadata):
+    """True if the file's start time was lost on the device."""
+    return _lost_start_epoch(metadata) is not None
+
+
+def recover_timestamps(df, metadata, start_time):
+    """
+    Rebuild real timestamps for a file whose start time was lost on the device.
+
+    Each row's elapsed time since logging started is recovered by undoing the
+    device's 32-bit (placeholder start + elapsed) addition, then added to
+    `start_time`, the actual time the device was initialized to start logging.
+
+    Returns (df, metadata) copies with corrected timestamps and header.
+    """
+    placeholder = _lost_start_epoch(metadata)
+    if placeholder is None:
+        return df, metadata
+
+    start = pd.Timestamp(start_time)
+    row_epochs = ((pd.to_datetime(df['Timestamp']) - _EPOCH)
+                  .dt.total_seconds().round().astype('int64'))
+    elapsed = (row_epochs - placeholder) % (1 << 32)
+
+    df = df.copy()
+    df['Timestamp'] = (start + pd.to_timedelta(elapsed, unit='s')).dt.strftime(_TIMESTAMP_FORMAT)
+
+    metadata = dict(metadata)
+    metadata['Initial Timestamp'] = start.strftime(_TIMESTAMP_FORMAT)
+    # The configured interval was lost too; report the one the data shows.
+    if len(elapsed) > 1:
+        metadata['Wake-up Interval (Seconds)'] = str(int(elapsed.diff().median()))
+    if metadata.get('Personal ID', 'UNKNOWN') == 'UNKNOWN':
+        metadata.pop('Personal ID', None)
+    metadata['Timestamp Recovery'] = 'Start time entered manually'
+    return df, metadata
+
+
+def to_csv_with_metadata(df, metadata):
+    """Serialize back to the device download format (metadata lines, then data)."""
+    lines = [f"{key},{value}" for key, value in (metadata or {}).items()]
+    return '\r\n'.join(lines) + '\r\n' + df.to_csv(index=False, lineterminator='\r\n')
+
 
 def baseline_asls(y, lam=1e6, p=0.4, niter=20):
     """
@@ -80,6 +160,51 @@ def _infer_interval_minutes(time_series, default=5.0):
         return default
     return diffs.median() / 60.0
 
+def dedrift_proximity(prox_series, interval_min, k=4.0, min_excursion=5.0):
+    """
+    Return a per-sample boolean `covered` mask that is invariant to proximity
+    baseline drift.
+
+    The APDS9960 proximity reading carries a slowly-varying DC pedestal that
+    climbs over a deployment (optical-front-end / LED drift as the battery
+    discharges). A raw ``prox == 0`` test for "sensor covered" therefore decays
+    over time -- the quiescent floor walks up from 0 into the tens, so late in a
+    record nothing is ever exactly 0 even while worn.
+
+    Instead of the raw value we track the quiescent floor with a ~1-day rolling
+    low percentile and work from the residual (raw minus floor). Because the
+    drift is additive, subtracting the floor makes an excursion of a given
+    physical size read the same regardless of when it occurred -- unlike a
+    percentage/ratio, which explodes when the floor is near zero (the entire
+    early "true-worn" period) and shrinks an identical event as the floor grows.
+
+    A sample is "covered" (at the quiescent floor => worn) when its residual sits
+    below a robust threshold: ``max(min_excursion, k * MAD)``. The MAD is a
+    robust noise scale of the residual, and ``min_excursion`` floors it so
+    quantisation noise cannot trigger when the MAD collapses toward zero.
+
+    Returns a numpy bool array aligned to `prox_series` positionally.
+    """
+    prox = pd.to_numeric(prox_series, errors='coerce').reset_index(drop=True)
+    prox = prox.ffill().bfill().fillna(0.0)
+
+    # ~1-day window for the quiescent floor; derived from the actual cadence so
+    # it is independent of the configured wakeup interval.
+    floor_window = max(1, round(1440 / interval_min))
+    floor = prox.rolling(floor_window, min_periods=1, center=True).quantile(0.10)
+    floor = floor.bfill().ffill()
+
+    resid = (prox - floor).clip(lower=0)
+
+    # Robust noise scale (MAD). The record is mostly quiescent, so the median of
+    # |resid - median| reflects the worn-state noise rather than the excursions.
+    med = resid.median()
+    mad = 1.4826 * (resid - med).abs().median()
+    threshold = max(min_excursion, k * mad)
+
+    return (resid <= threshold).to_numpy()
+
+
 def detect_onsets_offsets(time_series, temp_series, prox_series):
     """
     Advanced detection using a ~15-minute trend filter to prevent false triggers
@@ -88,6 +213,10 @@ def detect_onsets_offsets(time_series, temp_series, prox_series):
     Window sizes are expressed in wall-clock time and converted to a number of
     samples using the inferred sampling interval, so the detector behaves the
     same regardless of the configured wakeup interval.
+
+    Proximity is consumed through `dedrift_proximity` rather than as a raw value,
+    so the "sensor covered" gate stays valid as the proximity baseline drifts
+    over a long deployment.
     """
     # 1. Pre-processing
     interval_min = _infer_interval_minutes(time_series)
@@ -102,6 +231,9 @@ def detect_onsets_offsets(time_series, temp_series, prox_series):
 
     # ~15-minute trend: temperature difference compared to `trend_lag` samples ago
     trend = temp_series - temp_series.shift(trend_lag)
+
+    # Drift-invariant "sensor covered" state (replaces the raw prox == 0 test).
+    prox_covered = dedrift_proximity(prox_series, interval_min)
 
     # Thresholds
     ONSET_DELTA = 3.0      # Minimum heat above ambient to consider human
@@ -118,12 +250,12 @@ def detect_onsets_offsets(time_series, temp_series, prox_series):
     for i in range(trend_lag, len(delta)):
         if not in_event:
             # ONSET CONDITIONS:
-            # 1. Proximity is 0 (something is covering the sensor)
+            # 1. Sensor is covered (proximity at its drift-tracked quiescent floor)
             # 2. Trend is POSITIVE (removes noise on cooling slopes)
             # 3. Thermal Spike (Grad >= 0.8) OR Significant Heat (Delta >= 3.0)
             is_trending_up = trend[i] > 0
-            
-            if prox_series[i] == 0 and is_trending_up:
+
+            if prox_covered[i] and is_trending_up:
                 if gradient[i] >= ONSET_GRAD or delta[i] >= ONSET_DELTA:
                     in_event = True
                     onset_idx = i - 1
@@ -138,11 +270,11 @@ def detect_onsets_offsets(time_series, temp_series, prox_series):
             is_below_peak = delta[i] < (current_max_delta * PEAK_DROP_FACTOR)
             
             # End session if:
-            # - Proximity is physically lost (>0)
+            # - Proximity is physically lost (sensor no longer covered)
             # - OR it's cooling fast AND (is back near baseline OR has dropped significantly from peak)
-            if prox_series[i] > 0 or (is_cooling_fast and (delta[i] < OFFSET_DELTA or is_below_peak)):
+            if (not prox_covered[i]) or (is_cooling_fast and (delta[i] < OFFSET_DELTA or is_below_peak)):
                 # If triggered by cooling, the actual removal happened 1 sample (5m) prior
-                offset_idx = i - 1 if (prox_series[i] == 0) else i
+                offset_idx = i - 1 if prox_covered[i] else i
                 
                 # Minimum session length check (10 mins)
                 if (offset_idx - onset_idx) >= 2:
