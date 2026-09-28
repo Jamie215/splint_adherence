@@ -1,4 +1,5 @@
 import io
+import re
 import time
 import datetime
 import logging
@@ -24,6 +25,29 @@ READ_TIMEOUT = 10  # seconds for longer operations like data download
 # study; the analysis infers the cadence from timestamps, so it would still
 # work if this ever changed.
 WAKEUP_INTERVAL_SECONDS = 300
+
+
+# Participant ID rules. The device stores the ID in a 16-byte field (15
+# characters + terminator). Only letters, digits, '-' and '_' are allowed: a
+# comma would break the downloaded CSV header, and the ID often ends up in
+# file names.
+PERSONAL_ID_MAX_LEN = 15
+_PERSONAL_ID_RE = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def validate_personal_id(personal_id: Union[int, str, None]) -> Optional[str]:
+    """
+    Return an error message if `personal_id` is not a valid participant ID,
+    or None if it is valid. Integers (older numeric IDs) are accepted.
+    """
+    value = "" if personal_id is None else str(personal_id).strip()
+    if not value:
+        return "Please enter a participant ID."
+    if len(value) > PERSONAL_ID_MAX_LEN:
+        return f"Use at most {PERSONAL_ID_MAX_LEN} characters."
+    if not _PERSONAL_ID_RE.fullmatch(value):
+        return "Use only letters, digits, '-' and '_' (no spaces)."
+    return None
 
 
 def format_epoch(epoch_time: int) -> str:
@@ -153,8 +177,11 @@ class ArduinoClient:
         Returns:
             Tuple: (success, debug_output)
         """
-        # Convert personal_id to string if it's an integer
-        personal_id = str(personal_id) if isinstance(personal_id, int) else personal_id
+        # Older callers pass numeric IDs; the device stores text either way.
+        personal_id = str(personal_id).strip()
+        id_error = validate_personal_id(personal_id)
+        if id_error:
+            return False, f"Invalid participant ID: {id_error}"
 
         # Check for timestamp overflow and warn
         if epoch_time >= 2**32:
@@ -175,11 +202,9 @@ class ArduinoClient:
             if response != b"READY_FOR_INIT":
                 return False, f"Unexpected response: {response}"
 
-            # Ensure personal_id is exactly 16 bytes, null-padded
-            id_bytes = personal_id.encode('utf-8')
-            if len(id_bytes) > 15:  # Allow space for null terminator
-                id_bytes = id_bytes[:15]
-            id_bytes = id_bytes.ljust(16, b'\0')
+            # 16 bytes, null-padded. Validation above guarantees <= 15 ASCII
+            # characters, so the terminator always fits.
+            id_bytes = personal_id.encode('ascii').ljust(16, b'\0')
 
             # Pack data:
             # uint32_t timestamp (4 bytes)

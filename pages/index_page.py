@@ -30,7 +30,7 @@ def set_modal_content(initialize=False, selected_dt=None, download=False, error=
     status_msg = []
     if initialize:
         status_msg = [
-            html.Div("Please configure the following for device initialization.", className="mb-2"),
+            html.Div("Please configure the following for device initialization. Times are Eastern time (ET), 24-hour clock.", className="mb-2"),
         ]
     elif selected_dt:
         status_msg = [
@@ -117,7 +117,7 @@ def set_modal_content(initialize=False, selected_dt=None, download=False, error=
             dbc.Col(
                 html.Div([
                     html.Label(
-                        "Hour (24h, Eastern)",
+                        "Hour (ET)",
                         className="dropdown-label",
                         style={"display": "none"} if not initialize else {}
                     ),
@@ -149,8 +149,11 @@ def set_modal_content(initialize=False, selected_dt=None, download=False, error=
         ]),
         dbc.Row([
             dbc.Col([
-                html.Label("Personal ID", style={"display":"none"} if not initialize else {}),
-                dbc.Input(id="input-personal-id", type="number", min=0, max=65535, placeholder="0 to 65535", style={"display":"none"} if not initialize else {})
+                html.Label("Participant ID", style={"display":"none"} if not initialize else {}),
+                dbc.Input(id="input-personal-id", type="text", maxLength=arduino.PERSONAL_ID_MAX_LEN,
+                          placeholder="e.g. SA-014",
+                          style={"display":"none"} if not initialize else {}),
+                dbc.FormFeedback(id="personal-id-feedback", type="invalid")
             ], width=8
             )
         ])
@@ -264,7 +267,7 @@ def recovery_prompt():
                                      placeholder="Start date"),
             ]), width=6),
             dbc.Col(html.Div([
-                html.Label("Hour (24h, Eastern)", className="dropdown-label"),
+                html.Label("Hour (ET)", className="dropdown-label"),
                 dcc.Dropdown(id="dl-recovery-hour",
                              options=[{"label": f"{i:02d}", "value": i} for i in range(24)],
                              style={"width": "100px"}),
@@ -334,6 +337,20 @@ def index_layout():
     )
 
 def register_index_callbacks():
+    @app.callback(
+            [Output("input-personal-id", "invalid"),
+            Output("personal-id-feedback", "children")],
+            [Input("input-personal-id", "value"),
+            Input("initialize-btn", "n_clicks")],
+            prevent_initial_call=True)
+    def validate_personal_id_input(personal_id, _init_click):
+        """
+        Flag an invalid participant ID on the field as it is typed, and when
+        Initialize is clicked (which does nothing until the ID is valid).
+        """
+        error = arduino.validate_personal_id(personal_id)
+        return bool(error), error
+
     @app.callback(
             [Output("action-modal", "is_open"),
             Output("action-modal", "children"),
@@ -408,10 +425,15 @@ def register_index_callbacks():
 
                 # Type 5: "Initialize" button triggered
                 if triggered_id == "initialize-btn":
-                    # Validate inputs. Note: hour, minute and personal_id can
-                    # legitimately be 0 (midnight, minute 0, ID 0), which are
-                    # falsy, so check explicitly for None rather than truthiness.
-                    if any(v is None for v in (date, hour, minute, personal_id)):
+                    # An invalid participant ID is flagged on the field itself
+                    # (see validate_personal_id_input); keep the form open.
+                    if arduino.validate_personal_id(personal_id):
+                        return dash.no_update, dash.no_update, dash.no_update
+
+                    # Validate inputs. Note: hour and minute can legitimately be
+                    # 0 (midnight, minute 0), which is falsy, so check
+                    # explicitly for None rather than truthiness.
+                    if any(v is None for v in (date, hour, minute)):
                         updated_children = [curr_children[0]]
                         updated_children.extend(set_modal_content(error="Please complete all fields."))
                         return True, updated_children, json.dumps({"is_open": True})
@@ -426,7 +448,7 @@ def register_index_callbacks():
                     epoch_time = int(selected_datetime.timestamp())
 
                     # Send initialization command to Arduino
-                    success, message = arduino.client.initialize(epoch_time, int(personal_id))
+                    success, message = arduino.client.initialize(epoch_time, personal_id.strip())
                     if not success:
                         updated_children = [curr_children[0]]
                         updated_children.extend(set_modal_content(error=message))

@@ -74,3 +74,30 @@ def test_initialize_reports_failure_when_no_device(monkeypatch):
     monkeypatch.setattr(client, "_search", lambda: None)
     ok, message = client.initialize(1767272400, 1)
     assert not ok and "No Arduino device found" in message
+
+
+def test_validate_personal_id():
+    for ok in ("SA-014", "P_2026_07", "42", 42, "ABCDEFGHIJKLMNO"):  # 15 chars
+        assert arduino.validate_personal_id(ok) is None, ok
+    for bad in (None, "", "   ", "SA 014", "a,b", "ABCDEFGHIJKLMNOP", "é1"):
+        assert arduino.validate_personal_id(bad), bad
+
+
+def test_initialize_sends_alphanumeric_id(monkeypatch):
+    monkeypatch.setattr(arduino.time, "sleep", lambda s: None)
+    fake = FakeSerial([b"READY_FOR_INIT\r\n"])
+    client = ArduinoClient()
+    client._serial = fake
+
+    ok, _ = client.initialize(1767272400, " SA-014 ")
+
+    assert ok
+    _, _, pid, _ = struct.unpack("<II16sI", fake.written[1])
+    assert pid == b"SA-014".ljust(16, b"\0")
+
+
+def test_initialize_rejects_invalid_id_without_touching_device():
+    client = ArduinoClient()
+    client._search = lambda: (_ for _ in ()).throw(AssertionError("should not connect"))
+    ok, message = client.initialize(1767272400, "has space")
+    assert not ok and "participant ID" in message

@@ -102,6 +102,10 @@ don't depend on this constant.
   every wait is bounded by `PROX_WAIT_TIMEOUT_MS`. A stuck or missing sensor
   logs `0` instead of hanging the logger.
 - **Baud rate:** 9600 on both sides. The native USB port ignores it.
+- **Participant ID:** stored as text in a 16-byte field (15 characters plus a
+  terminator). The app accepts letters, digits, `-` and `_`, with the rule in
+  `arduino.validate_personal_id`. Commas would break the CSV header, and the ID
+  often ends up in file names. Numeric IDs from earlier versions are still valid.
 
 **Build:** use the Arduino IDE with the Nano 33 BLE (mbed) board package and the
 `Arduino_APDS9960` and `Arduino_HS300x` libraries. Note the exact versions you
@@ -231,14 +235,11 @@ unstyled on offline machines. These files now ship under `assets/vendor/`:
    - Bench-test before any deployment longer than about 45 days.
 2. **Detection thresholds and drift parameters** (§4) were tuned on a small
    amount of data.
-3. **Personal ID**: the UI accepts integers 0–65535, but the firmware stores a
-   15-character string. The two are compatible, but alphanumeric IDs would
-   need a UI change.
-4. **Battery life and power draw** of the current sleep approach have not been
+3. **Battery life and power draw** of the current sleep approach have not been
    measured over a full-length deployment.
-5. **No device-side clock correction.** Timestamps rely on the board's clock
+4. **No device-side clock correction.** Timestamps rely on the board's clock
    (`millis()`) drifting very little over weeks.
-6. **What happens after about 52 days (15,000 records)**:
+5. **What happens after about 52 days (15,000 records)**:
    - `saveTemperatureReading` checks bounds against the *whole flash*, not
      `MAX_DATA_ENTRIES`. So logging continues past record 15,000.
    - Those extra records go into pages that initialization never erased,
@@ -246,7 +247,7 @@ unstyled on offline machines. These files now ship under `assets/vendor/`:
    - `findHighestDataIndex` only scans the first 15,000 records, so anything
      after that is **never downloaded**.
    - Treat about 52 days as the hard limit per deployment.
-7. The frozen macOS build is unsigned. Gatekeeper will warn on first launch
+6. The frozen macOS build is unsigned. Gatekeeper will warn on first launch
    (right-click → Open).
 
 ## 9. Build, test and release runbook

@@ -95,7 +95,7 @@ shuts itself down after a short timeout.
 ## Using the app
 
 1. **Initialize Device** – connect the device over USB, then set the start date,
-   time (**Eastern time**), and a personal ID. The GUI packs this configuration (with a checksum)
+   time (**Eastern time**), and a participant ID (up to 15 letters, digits, `-` or `_`, e.g. `SA-014`). The GUI packs this configuration (with a checksum)
    and sends it to the device, which then powers down and begins logging on its
    next power-up.
 2. **Data Download** – connect a device that has recorded data and enter a
