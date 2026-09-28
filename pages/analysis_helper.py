@@ -43,6 +43,79 @@ def parse_file(contents):
     except Exception as e:
         return None, {}, f"Could not parse file: {str(e)}"
 
+# The device computes each row's timestamp as (initial timestamp + elapsed
+# seconds) in 32-bit arithmetic. If its config was lost, the initial timestamp
+# is either a blank flash word (0xFFFFFFFF -> 2106-02-07 06:28:15, older
+# firmware) or reported as UNKNOWN (current firmware, which then sends a start
+# of 0). In both cases the elapsed seconds survive and the real timestamps can
+# be rebuilt from a start time supplied by the user.
+_BLANK_FLASH_WORD = 0xFFFFFFFF
+_TIMESTAMP_FORMAT = '%Y-%m-%d %H:%M:%S'
+_EPOCH = pd.Timestamp('1970-01-01')
+
+
+def _lost_start_epoch(metadata):
+    """
+    Return the epoch the device used in place of the lost start time
+    (0xFFFFFFFF or 0), or None if the file's start time looks valid.
+    """
+    initial = str((metadata or {}).get('Initial Timestamp', '')).strip()
+    if initial.upper() == 'UNKNOWN':
+        return 0
+    if initial.isdigit():
+        epoch = int(initial)
+    else:
+        try:
+            epoch = int((pd.Timestamp(initial) - _EPOCH).total_seconds())
+        except (ValueError, TypeError):
+            return None
+    return epoch if epoch == _BLANK_FLASH_WORD else None
+
+
+def needs_timestamp_recovery(metadata):
+    """True if the file's start time was lost on the device."""
+    return _lost_start_epoch(metadata) is not None
+
+
+def recover_timestamps(df, metadata, start_time):
+    """
+    Rebuild real timestamps for a file whose start time was lost on the device.
+
+    Each row's elapsed time since logging started is recovered by undoing the
+    device's 32-bit (placeholder start + elapsed) addition, then added to
+    `start_time`, the actual time the device was initialized to start logging.
+
+    Returns (df, metadata) copies with corrected timestamps and header.
+    """
+    placeholder = _lost_start_epoch(metadata)
+    if placeholder is None:
+        return df, metadata
+
+    start = pd.Timestamp(start_time)
+    row_epochs = ((pd.to_datetime(df['Timestamp']) - _EPOCH)
+                  .dt.total_seconds().round().astype('int64'))
+    elapsed = (row_epochs - placeholder) % (1 << 32)
+
+    df = df.copy()
+    df['Timestamp'] = (start + pd.to_timedelta(elapsed, unit='s')).dt.strftime(_TIMESTAMP_FORMAT)
+
+    metadata = dict(metadata)
+    metadata['Initial Timestamp'] = start.strftime(_TIMESTAMP_FORMAT)
+    # The configured interval was lost too; report the one the data shows.
+    if len(elapsed) > 1:
+        metadata['Wake-up Interval (Seconds)'] = str(int(elapsed.diff().median()))
+    if metadata.get('Personal ID', 'UNKNOWN') == 'UNKNOWN':
+        metadata.pop('Personal ID', None)
+    metadata['Timestamp Recovery'] = 'Start time entered manually'
+    return df, metadata
+
+
+def to_csv_with_metadata(df, metadata):
+    """Serialize back to the device download format (metadata lines, then data)."""
+    lines = [f"{key},{value}" for key, value in (metadata or {}).items()]
+    return '\r\n'.join(lines) + '\r\n' + df.to_csv(index=False, lineterminator='\r\n')
+
+
 def baseline_asls(y, lam=1e6, p=0.4, niter=20):
     """
     Asymmetric least squares smoothing for baseline estimation
