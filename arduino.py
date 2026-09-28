@@ -1,4 +1,5 @@
 import io
+import re
 import time
 import datetime
 import logging
@@ -8,12 +9,56 @@ from typing import Optional, Dict, Any, Tuple, Union
 import serial
 import serial.tools.list_ports
 
+from timezone_config import DISPLAY_TZ, DISPLAY_TZ_NAME
+
 logger = logging.getLogger(__name__)
 
 # Constants for serial communication
-BAUD_RATE = 115200
+# Matches SERIAL_BAUD_RATE in the firmware. The Nano 33 BLE's native USB (CDC)
+# port ignores the baud rate, so this value does not affect throughput -- it is
+# kept in sync only so the two sides don't look inconsistent.
+BAUD_RATE = 9600
 TIMEOUT = 5  # seconds
 READ_TIMEOUT = 10  # seconds for longer operations like data download
+
+# Seconds between logged samples. Intentionally fixed at 5 minutes for this
+# study; the analysis infers the cadence from timestamps, so it would still
+# work if this ever changed.
+WAKEUP_INTERVAL_SECONDS = 300
+
+
+# Participant ID rules. The device stores the ID in a 16-byte field (15
+# characters + terminator). Only letters, digits, '-' and '_' are allowed: a
+# comma would break the downloaded CSV header, and the ID often ends up in
+# file names.
+PERSONAL_ID_MAX_LEN = 15
+_PERSONAL_ID_RE = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def validate_personal_id(personal_id: Union[int, str, None]) -> Optional[str]:
+    """
+    Return an error message if `personal_id` is not a valid participant ID,
+    or None if it is valid. Integers (older numeric IDs) are accepted.
+    """
+    value = "" if personal_id is None else str(personal_id).strip()
+    if not value:
+        return "Please enter a participant ID."
+    if len(value) > PERSONAL_ID_MAX_LEN:
+        return f"Use at most {PERSONAL_ID_MAX_LEN} characters."
+    if not _PERSONAL_ID_RE.fullmatch(value):
+        return "Use only letters, digits, '-' and '_' (no spaces)."
+    return None
+
+
+def format_epoch(epoch_time: int) -> str:
+    """
+    Render a device UTC epoch as Eastern wall-clock time with its UTC offset,
+    e.g. ``2026-01-01 08:00:00-05:00``. The offset keeps the repeated hour at
+    the autumn DST change unambiguous.
+    """
+    return (datetime.datetime.fromtimestamp(epoch_time, tz=datetime.timezone.utc)
+            .astimezone(DISPLAY_TZ)
+            .isoformat(sep=' '))
 
 
 class ArduinoClient:
@@ -125,15 +170,18 @@ class ArduinoClient:
             return b"ERROR"
 
     def initialize(self, epoch_time: int, personal_id: Union[int, str] = "",
-                   wakeup_interval: int = 300) -> Tuple[bool, str]:
+                   wakeup_interval: int = WAKEUP_INTERVAL_SECONDS) -> Tuple[bool, str]:
         """
         Initialize the Arduino with timestamp, ID and wakeup interval.
 
         Returns:
             Tuple: (success, debug_output)
         """
-        # Convert personal_id to string if it's an integer
-        personal_id = str(personal_id) if isinstance(personal_id, int) else personal_id
+        # Older callers pass numeric IDs; the device stores text either way.
+        personal_id = str(personal_id).strip()
+        id_error = validate_personal_id(personal_id)
+        if id_error:
+            return False, f"Invalid participant ID: {id_error}"
 
         # Check for timestamp overflow and warn
         if epoch_time >= 2**32:
@@ -154,11 +202,9 @@ class ArduinoClient:
             if response != b"READY_FOR_INIT":
                 return False, f"Unexpected response: {response}"
 
-            # Ensure personal_id is exactly 16 bytes, null-padded
-            id_bytes = personal_id.encode('utf-8')
-            if len(id_bytes) > 15:  # Allow space for null terminator
-                id_bytes = id_bytes[:15]
-            id_bytes = id_bytes.ljust(16, b'\0')
+            # 16 bytes, null-padded. Validation above guarantees <= 15 ASCII
+            # characters, so the terminator always fits.
+            id_bytes = personal_id.encode('ascii').ljust(16, b'\0')
 
             # Pack data:
             # uint32_t timestamp (4 bytes)
@@ -323,8 +369,10 @@ class ArduinoClient:
             # Process the line according to state
             if in_metadata:
                 if line_str.startswith("Timestamp,Temperature,ProximityVal"):
-                    # Found header line, switch to data mode
+                    # Found header line, switch to data mode. Record the zone
+                    # the timestamps below are rendered in.
                     in_metadata = False
+                    output.write(f"Timezone,{DISPLAY_TZ_NAME}\r\n")
                     output.write("Timestamp,Temperature,ProximityVal\r\n")
                 elif line_str.startswith("Initial Timestamp,"):
                     # Process timestamp in metadata
@@ -332,10 +380,7 @@ class ArduinoClient:
                     if len(parts) > 1 and parts[1].strip().isdigit():
                         # Convert timestamp to readable format
                         epoch_time = int(parts[1].strip())
-                        iso_time = datetime.datetime.fromtimestamp(
-                            epoch_time, tz=datetime.timezone.utc
-                        ).strftime('%Y-%m-%d %H:%M:%S')
-                        output.write(f"Initial Timestamp,{iso_time}\r\n")
+                        output.write(f"Initial Timestamp,{format_epoch(epoch_time)}\r\n")
                     else:
                         # Keep original line if conversion fails
                         output.write(f"{line_str}\r\n")
@@ -349,10 +394,7 @@ class ArduinoClient:
                     # It's a data line with timestamp
                     try:
                         epoch_time = int(parts[0].strip())
-                        iso_time = datetime.datetime.fromtimestamp(
-                            epoch_time, tz=datetime.timezone.utc
-                        ).strftime('%Y-%m-%d %H:%M:%S')
-                        output.write(f"{iso_time},{parts[1]},{parts[2]}\r\n")
+                        output.write(f"{format_epoch(epoch_time)},{parts[1]},{parts[2]}\r\n")
                     except (ValueError, OverflowError) as e:
                         # Handle invalid timestamps
                         logger.warning(f"Invalid timestamp {parts[0]}: {e}")

@@ -5,6 +5,8 @@ import numpy as np
 from scipy import sparse
 from scipy.sparse.linalg import spsolve
 
+from timezone_config import DISPLAY_TZ
+
 def parse_file(contents):
     """
     Parser specifically designed for files with metadata section followed by data table.
@@ -32,6 +34,10 @@ def parse_text(file_content):
                 data_start = i
                 break
             
+        if data_start is None:
+            return None, {}, ("Could not parse file: no data header row "
+                              "(e.g. 'Timestamp,Temperature,ProximityVal') was found.")
+
         # Extract metadata
         metadata = {}
         for i in range(data_start):
@@ -50,6 +56,18 @@ def parse_text(file_content):
     except Exception as e:
         return None, {}, f"Could not parse file: {str(e)}"
 
+def to_display_tz(time_series):
+    """
+    Convert a column of timestamps to tz-aware Eastern time (see
+    timezone_config.DISPLAY_TZ).
+
+    Current downloads carry an explicit UTC offset (``...-05:00``), so they are
+    converted exactly. Older downloads have naive timestamps that were written
+    in UTC, so naive values are interpreted as UTC -- which puts legacy files on
+    the same Eastern clock as new ones.
+    """
+    return pd.to_datetime(time_series, utc=True).dt.tz_convert(DISPLAY_TZ)
+
 # The device computes each row's timestamp as (initial timestamp + elapsed
 # seconds) in 32-bit arithmetic. If its config was lost, the initial timestamp
 # is either a blank flash word (0xFFFFFFFF -> 2106-02-07 06:28:15, older
@@ -57,8 +75,22 @@ def parse_text(file_content):
 # of 0). In both cases the elapsed seconds survive and the real timestamps can
 # be rebuilt from a start time supplied by the user.
 _BLANK_FLASH_WORD = 0xFFFFFFFF
-_TIMESTAMP_FORMAT = '%Y-%m-%d %H:%M:%S'
-_EPOCH = pd.Timestamp('1970-01-01')
+_EPOCH_UTC = pd.Timestamp('1970-01-01', tz='UTC')
+
+
+def _utc_epochs(time_series):
+    """
+    Epoch seconds for a column of timestamp strings. Values with a UTC offset
+    (current downloads, in Eastern time) are converted exactly; naive values
+    (older downloads) were written in UTC.
+    """
+    return ((pd.to_datetime(time_series, utc=True) - _EPOCH_UTC)
+            .dt.total_seconds().round().astype('int64'))
+
+
+def _format_local(ts):
+    """Format a tz-aware timestamp like a device download: Eastern with offset."""
+    return ts.tz_convert(DISPLAY_TZ).isoformat(sep=' ')
 
 
 def _lost_start_epoch(metadata):
@@ -73,7 +105,7 @@ def _lost_start_epoch(metadata):
         epoch = int(initial)
     else:
         try:
-            epoch = int((pd.Timestamp(initial) - _EPOCH).total_seconds())
+            epoch = int(_utc_epochs(pd.Series([initial])).iloc[0])
         except (ValueError, TypeError):
             return None
     return epoch if epoch == _BLANK_FLASH_WORD else None
@@ -91,6 +123,9 @@ def recover_timestamps(df, metadata, start_time):
     Each row's elapsed time since logging started is recovered by undoing the
     device's 32-bit (placeholder start + elapsed) addition, then added to
     `start_time`, the actual time the device was initialized to start logging.
+    A naive `start_time` is Eastern wall-clock time, as entered in the app; the
+    rebuilt timestamps are written in Eastern time with their UTC offset, like a
+    normal download.
 
     Returns (df, metadata) copies with corrected timestamps and header.
     """
@@ -99,20 +134,21 @@ def recover_timestamps(df, metadata, start_time):
         return df, metadata
 
     start = pd.Timestamp(start_time)
-    row_epochs = ((pd.to_datetime(df['Timestamp']) - _EPOCH)
-                  .dt.total_seconds().round().astype('int64'))
-    elapsed = (row_epochs - placeholder) % (1 << 32)
+    start = start.tz_localize(DISPLAY_TZ) if start.tzinfo is None else start.tz_convert(DISPLAY_TZ)
+    elapsed = (_utc_epochs(df['Timestamp']) - placeholder) % (1 << 32)
 
     df = df.copy()
-    df['Timestamp'] = (start + pd.to_timedelta(elapsed, unit='s')).dt.strftime(_TIMESTAMP_FORMAT)
+    # Adding elapsed time to a tz-aware start is exact across DST changes.
+    df['Timestamp'] = (start + pd.to_timedelta(elapsed, unit='s')).map(_format_local)
 
     metadata = dict(metadata)
-    metadata['Initial Timestamp'] = start.strftime(_TIMESTAMP_FORMAT)
+    metadata['Initial Timestamp'] = _format_local(start)
     # The configured interval was lost too; report the one the data shows.
     if len(elapsed) > 1:
         metadata['Wake-up Interval (Seconds)'] = str(int(elapsed.diff().median()))
     if metadata.get('Personal ID', 'UNKNOWN') == 'UNKNOWN':
         metadata.pop('Personal ID', None)
+    metadata['Timezone'] = DISPLAY_TZ.zone
     metadata['Timestamp Recovery'] = 'Start time entered manually'
     return df, metadata
 
@@ -273,10 +309,10 @@ def detect_onsets_offsets(time_series, temp_series, prox_series):
             # - Proximity is physically lost (sensor no longer covered)
             # - OR it's cooling fast AND (is back near baseline OR has dropped significantly from peak)
             if (not prox_covered[i]) or (is_cooling_fast and (delta[i] < OFFSET_DELTA or is_below_peak)):
-                # If triggered by cooling, the actual removal happened 1 sample (5m) prior
+                # If triggered by cooling, the actual removal happened 1 sample prior
                 offset_idx = i - 1 if prox_covered[i] else i
                 
-                # Minimum session length check (10 mins)
+                # Minimum session length check (2 samples, i.e. 10 min at 5-min sampling)
                 if (offset_idx - onset_idx) >= 2:
                     events.append((onset_idx, offset_idx))
                 
@@ -286,15 +322,17 @@ def detect_onsets_offsets(time_series, temp_series, prox_series):
     # DataFrame preparation
     out = pd.DataFrame(events, columns=['StartIdx', 'EndIdx'])
     if not out.empty:
-        out['Onset'] = time_series.iloc[out['StartIdx']].values
-        out['Offset'] = time_series.iloc[out['EndIdx']].values
+        # reset_index (not .values) keeps any timezone on the timestamps, so
+        # durations stay correct across DST changes.
+        out['Onset'] = time_series.iloc[out['StartIdx']].reset_index(drop=True)
+        out['Offset'] = time_series.iloc[out['EndIdx']].reset_index(drop=True)
         out['DurationMin'] = (out['Offset'] - out['Onset']).dt.total_seconds()/60
     
     return baseline, delta, out
 
 def extract_peaks(time_series, temp_series, events_df):
     """
-    Returns a DaraFrame composed of PeakTime, PeakTemp
+    Returns a DataFrame composed of EventID, PeakTemp, PeakTime
     """
     rows = []
     for _, event in events_df.iterrows():
@@ -308,73 +346,56 @@ def extract_peaks(time_series, temp_series, events_df):
 
     return pd.DataFrame(rows)
 
-def prepare_gantt(onset_times, offset_times):
-    split_rows = []
-
-    # Iterate by value rather than positional/label index: the incoming Series
-    # may carry a non-sequential index (e.g. after a sort), so onset_times[i]
-    # would be unreliable.
+def _split_by_day(onset_times, offset_times):
+    """
+    Yield (date, segment_start, segment_end, onset, offset) for each calendar
+    day an event touches, clipping the event to that day. Works with naive or
+    tz-aware timestamps: days are taken in the timestamps' own zone, and each
+    midnight is localized separately so DST days keep their true 23/25-hour
+    length.
+    """
     for onset, offset in zip(onset_times, offset_times):
-        start = pd.to_datetime(onset)
-        end = pd.to_datetime(offset)
+        start = pd.Timestamp(onset)
+        end = pd.Timestamp(offset)
+        day = start.date()
+        while day <= end.date():
+            day_start = pd.Timestamp(day).tz_localize(start.tz)
+            day_end = pd.Timestamp(day + pd.Timedelta(days=1)).tz_localize(start.tz)
+            yield day, max(start, day_start), min(end, day_end), onset, offset
+            day += pd.Timedelta(days=1)
 
-        current = start
-        while current.date() <= end.date():
-            this_date = current.date()
+def _hour_of_day(ts, day):
+    """Fractional hour of day of `ts` on `day`; 24.0 if `ts` is the next midnight."""
+    if ts.date() != day:
+        return 24.0
+    return ts.hour + ts.minute / 60
 
-            if this_date == start.date() and this_date == end.date():
-                # Same day: normal case
-                start_hr = start.hour + start.minute / 60
-                end_hr = end.hour + end.minute / 60
-            elif this_date == start.date():
-                # First day of a multi-day span
-                start_hr = start.hour + start.minute / 60
-                end_hr = 24.0
-            elif this_date == end.date():
-                # Final day of a multi-day span
-                start_hr = 0.0
-                end_hr = end.hour + end.minute / 60
-            else:
-                # Middle day
-                start_hr = 0.0
-                end_hr = 24.0
-            
-            split_rows.append({
-                'Date': str(this_date),
-                'StartHour': start_hr,
-                'EndHour': end_hr,
-                'Start': onset,
-                'End': offset
-            })
-
-            current += pd.Timedelta(days=1)
-    return pd.DataFrame(split_rows)
+def prepare_gantt(onset_times, offset_times):
+    """
+    Split each wear event into one row per calendar day with its start/end hour
+    of day, for the hour-of-day timeline chart.
+    """
+    # Iterate by value rather than positional/label index: the incoming Series
+    # may carry a non-sequential index (e.g. after a sort).
+    rows = [{
+        'Date': str(day),
+        'StartHour': _hour_of_day(seg_start, day),
+        'EndHour': _hour_of_day(seg_end, day),
+        'Start': onset,
+        'End': offset,
+    } for day, seg_start, seg_end, onset, offset in _split_by_day(onset_times, offset_times)]
+    return pd.DataFrame(rows, columns=['Date', 'StartHour', 'EndHour', 'Start', 'End'])
 
 def prepare_occurance_summary(onset_times, offset_times):
-    onset_series = pd.to_datetime(onset_times)
-    offset_series = pd.to_datetime(offset_times)
-
-    summary_rows = []
-
-    for start, end in zip(onset_series, offset_series):
-        current = start
-        while current.date() <= end.date():
-            date = current.date()
-
-            if date == start.date() and date == end.date():
-                dur = (end - start).total_seconds() / 60.0
-            elif date == start.date():
-                dur = ((pd.Timestamp.combine(date + pd.Timedelta(days=1), pd.Timestamp.min.time()) - start).total_seconds()) / 60.0
-            elif date == end.date():
-                dur = ((end - pd.Timestamp.combine(date, pd.Timestamp.min.time())).total_seconds()) / 60.0
-
-            else:
-                dur = 1440.0  # full day = 24h = 1440 minutes
-
-            summary_rows.append({'Date': date, 'DurationMin': dur})
-            current += pd.Timedelta(days=1)
-
-    summary_df = pd.DataFrame(summary_rows)
+    """
+    Total wear minutes and event count per calendar day. Events spanning
+    midnight are split so each day gets only its own share.
+    """
+    rows = [{
+        'Date': day,
+        'DurationMin': (seg_end - seg_start).total_seconds() / 60.0,
+    } for day, seg_start, seg_end, _, _ in _split_by_day(onset_times, offset_times)]
+    summary_df = pd.DataFrame(rows, columns=['Date', 'DurationMin'])
 
     return summary_df.groupby('Date').agg(
                 TotalDurationMin=('DurationMin', 'sum'),

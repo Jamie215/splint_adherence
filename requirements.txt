@@ -26,8 +26,9 @@ scipy==1.15.2
 # Device communication
 pyserial==3.5
 
-# Timezones
+# Timezones (Eastern-time display; see timezone_config.py)
 pytz==2024.1
+tzdata==2026.4  # bundled into frozen builds (setup.py packages)
 
 # Required so cx_Freeze can bundle idna.idnadata (see includes in setup.py)
 idna==3.10

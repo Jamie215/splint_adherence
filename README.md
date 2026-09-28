@@ -11,6 +11,10 @@ temperature sensor rises above the ambient baseline while the proximity sensor i
 covered. Onsets and offsets of these events are detected and summarized into
 per-day wear totals and an hour-of-day timeline.
 
+> **Taking over this project?** See [HANDOFF.md](HANDOFF.md) for architecture,
+> firmware lessons learned, algorithm parameters, known limitations, and the
+> release runbook.
+
 ## How it works
 
 ```
@@ -49,9 +53,11 @@ The GUI talks to the device over a simple serial protocol:
 | `pages/index_page.py`                      | Home page: Initialize / Download modal flow and callbacks     |
 | `pages/data_analysis_page.py`              | Upload a CSV and render plots, table, and summaries           |
 | `pages/analysis_helper.py`                 | Parsing, onset/offset detection, gantt and summary helpers    |
-| `assets/`                                  | CSS, client-side heartbeat websocket JS                       |
+| `assets/`                                  | CSS, heartbeat websocket JS, vendored fonts/theme/icons (offline) |
 | `collect_temperature/collect_temperature.ino` | Arduino firmware for the logger                            |
-| `setup.py`                                 | `cx_Freeze` configuration for building a Windows executable   |
+| `timezone_config.py`                       | Display time zone (America/New_York) used across the app      |
+| `tests/`                                   | pytest suite (no hardware needed)                             |
+| `setup.py`                                 | `cx_Freeze` configuration for Windows / macOS bundles         |
 
 ## Requirements
 
@@ -89,7 +95,7 @@ shuts itself down after a short timeout.
 ## Using the app
 
 1. **Initialize Device** – connect the device over USB, then set the start date,
-   time, and a personal ID. The GUI packs this configuration (with a checksum)
+   time (**Eastern time**), and a participant ID (up to 15 letters, digits, `-` or `_`, e.g. `SA-014`). The GUI packs this configuration (with a checksum)
    and sends it to the device, which then powers down and begins logging on its
    next power-up.
 2. **Data Download** – connect a device that has recorded data and enter a
@@ -99,29 +105,59 @@ shuts itself down after a short timeout.
    proximity traces, detected wearing periods, a per-day wear-time summary, and
    an hour-of-day timeline of when the splint was worn.
 
-## Building a standalone executable
-
-The app can be packaged into a Windows executable with `cx_Freeze`:
+## Running the tests
 
 ```bash
-python setup.py build_exe
+pip install -r requirements.txt -r requirements-dev.txt
+pytest
 ```
 
-The bundle is written to the `Splint_Adherence/` directory.
+The tests cover the analysis helpers and serial-protocol parsing and need no
+device. They also run in CI on every pull request.
+
+## Building a standalone executable
+
+The app is packaged with `cx_Freeze`:
+
+```bash
+python setup.py build_exe    # Windows -> Splint_Adherence/
+python setup.py bdist_mac    # macOS   -> build/Splint_Adherence.app
+```
+
+### Releasing
+
+Bump `version` in `setup.py`, merge to `main`, then push a matching tag:
+
+```bash
+git tag v1.2.0
+git push origin v1.2.0
+```
+
+The **Build and Release** GitHub Actions workflow builds both bundles and
+attaches `Splint_Adherence-windows.zip` and `Splint_Adherence-macos.zip` to the
+GitHub Release. You can also run the workflow manually from the Actions tab to
+get the bundles as run artifacts without publishing a release.
 
 ## Data format
 
 Downloaded CSVs contain a short metadata header followed by the readings:
 
 ```
-Initial Timestamp,2026-01-01 08:00:00
+Initial Timestamp,2026-01-01 08:00:00-05:00
 Wake-up Interval (Seconds),300
 Personal ID,42
+Timezone,America/New_York
 Timestamp,Temperature,ProximityVal
-2026-01-01 08:00:00,30.50,0
-2026-01-01 08:05:00,31.00,5
+2026-01-01 08:00:00-05:00,30.50,0
+2026-01-01 08:05:00-05:00,31.00,5
 ...
 ```
 
-The analysis page also accepts older exports that lack the `ProximityVal`
-column; those readings are treated as proximity `0`.
+Timestamps are Eastern time (DST-aware) with their UTC offset. The device
+itself records UTC; the app converts on download.
+
+The analysis page also accepts older exports:
+
+- Files without a `ProximityVal` column: those readings are treated as proximity `0`.
+- Files downloaded before v1.2.0: their timestamps are naive UTC, and they are
+  converted to Eastern time automatically.
