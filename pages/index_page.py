@@ -1,8 +1,8 @@
 """
-Import Libraries
+Home page: the Initialize Device and Data Download flows (shown in a modal),
+plus the link to the Data Analysis page.
 """
 import datetime
-import json
 import logging
 
 from dash import dcc, html, Input, Output, State, callback_context
@@ -12,237 +12,155 @@ import dash_bootstrap_components as dbc
 from app_instance import app
 import arduino
 import pages.analysis_helper as analysis_helper
+from pages.components import start_time_inputs, start_time_from_inputs, status_message
 from timezone_config import DISPLAY_TZ
 
 logger = logging.getLogger(__name__)
 
-def set_modal_content(initialize=False, selected_dt=None, download=False, error=None, footer_view="None"):
-    """
-    Set content for modal body and footer
+HIDDEN = {"display": "none"}
 
-    initialize: set the modal body to be the initialization view of initialization flow
-    selected_dt: set the modal body to be the confirmation view of initialization flow
-    download: set the modal body view to be the download flow
-    error: set the modal body view to be initialization fail view with the error
-    footer_view: set the modal footer view (Type: None, Modal Start, Initialize)
+MODAL_TITLES = {
+    "initialize": "Initialize Device",
+    "download": "Download Data",
+}
+
+NOT_FOUND_HELP = [
+    "Please make sure the device is ",
+    html.B("powered"), ", ",
+    html.B("connected by USB"), ", and in ",
+    html.B("idle mode"),
+    ". A device that is logging cannot be seen by this computer: power-cycle it once and try again.",
+]
+
+
+def initialize_form(visible):
     """
-    # Generate modal body content
-    status_msg = []
-    if initialize:
-        status_msg = [
-            html.Div("Please configure the following for device initialization. Times are Eastern time (ET), 24-hour clock.", className="mb-2"),
-        ]
-    elif selected_dt:
-        status_msg = [
-            html.I(className="fas fa-check-circle initiate-success"),
-            dbc.Row(
-                html.Div([
-                    "The device has been initialized for ",
-                    html.Span(selected_dt, style={"color": "RoyalBlue", "font-weight":"bold"}),
-                    " and powered down. It will be collecting temperature in the next powerup.",
-                    html.Br(),
-                    html.Br(),
-                    " You may now disconnect the device.",
-                    " If you want to continue initializing the device,",
-                    " check the connection of the device and",
-                    " restart the initializing process."
-                ])
-            ),
-            html.Div([
-                    dbc.Button("Re-Initialize", id="re-attempt-btn", className="initialize-btn")
-                ],
-                style={"text-align":"center"}
-            )
-        ]
-    elif download:
-        status_msg = [
-            html.Div("Enter your filename."),
-            dbc.Input(id="download-filename", placeholder="Subject(UID)_(Quarter).(DeviceIteration)", value="Subject_", required=True, className="mb-2"),
-            dcc.Loading(
-                id="loading-download",
-                type="circle",
-                children=[
-                    html.Div(id="download-file-status")
-                ]
-            ),
+    Start time and participant ID fields. Always part of the modal (hidden
+    outside the initialize step) because the modal callback reads them as State.
+    """
+    # Pre-fill with the current Eastern time, independent of the PC's own zone.
+    now = datetime.datetime.now(DISPLAY_TZ)
+    return html.Div([
+        html.Div("Choose when the device should start logging (Eastern time, 24-hour clock) "
+                 "and enter the participant ID.", className="mb-3"),
+        start_time_inputs(
+            "init", date=now.date(), hour=now.hour, minute=now.minute,
+            min_date_allowed=now.date(),
+            max_date_allowed=now.date() + datetime.timedelta(days=60),
+            initial_visible_month=now.date(),
+        ),
+        html.Label("Participant ID", className="dropdown-label"),
+        dbc.Input(id="input-personal-id", type="text", maxLength=arduino.PERSONAL_ID_MAX_LEN,
+                  placeholder="e.g. SA-014"),
+        dbc.FormFeedback(id="personal-id-feedback", type="invalid"),
+    ], style=None if visible else HIDDEN)
+
+
+def download_form(visible):
+    """
+    Filename field and download button. The button and dcc.Download are always
+    part of the modal; the rest only in the download step.
+    """
+    fields = []
+    if visible:
+        fields = [
+            html.Label("File name", className="dropdown-label"),
+            dbc.Input(id="download-filename", placeholder="Subject(UID)_(Quarter).(DeviceIteration)",
+                      value="Subject_", required=True, className="mb-2"),
+            dcc.Loading(type="circle", children=html.Div(id="download-file-status")),
             # Filled with a start-time prompt if the device lost its start time
             html.Div(id="download-recovery"),
-            dcc.Store(id="download-raw-store")
+            dcc.Store(id="download-raw-store"),
         ]
-    elif error:
-        status_msg = [
-            html.I(className="fas fa-times-circle initiate-fail"),
-            dbc.Row(
-                html.Div([
-                        html.Div("Arduino Connection Failed.", style={"text-align": "center", "color": "indianred"}),
-                        html.Br(),
-                        "Please ensure that the device is ",
-                        html.B("powered "),
-                        "and ",
-                        html.B("properly connected!")
-                ])
-            ),
-            dbc.Col([
-                    dbc.Button("Try Again", id="re-attempt-btn", className="initialize-btn")
-                ],
-                style={"text-align":"center"},
-                width=12
-            )
-        ]
-    else:
-        status_msg = [html.Div("Please connect Arduino to computer.", className="mb-2")]
-
-    # Pre-fill with the current Eastern time, independent of the PC's own zone.
-    curr_date = datetime.datetime.now(DISPLAY_TZ)
-    initialize_view = [
-        dbc.Row([
-            dbc.Col(
-                html.Div([
-                    html.Label(
-                        "Date",
-                        className="dropdown-label",
-                        style={"display":"none"} if not initialize else {}
-                    ),
-                    dcc.DatePickerSingle(
-                        id="date-picker",
-                        min_date_allowed=curr_date.date(),
-                        max_date_allowed=curr_date.date() + datetime.timedelta(days=60),
-                        initial_visible_month=curr_date.date(),
-                        date=curr_date.date(),
-                        style={"display": "none"} if not initialize else {}
-                    ),
-                ]),
-                width=6
-            ),
-            dbc.Col(
-                html.Div([
-                    html.Label(
-                        "Hour (ET)",
-                        className="dropdown-label",
-                        style={"display": "none"} if not initialize else {}
-                    ),
-                    dcc.Dropdown(
-                        id="hour",
-                        options=[{"label": f"{i:02d}", "value": i} for i in range(24)],
-                        value=curr_date.hour,
-                        style={"display": "none"} if not initialize else {"width": "100px", "display": "block"}
-                    )
-                ]),
-                width=3
-            ),
-            dbc.Col(
-                html.Div([
-                    html.Label(
-                        "Minute",
-                        className="dropdown-label",
-                        style={"display": "none"} if not initialize else {}
-                    ),
-                    dcc.Dropdown(
-                        id="minute",
-                        options=[{"label": f"{i:02d}", "value": i} for i in range(60)],
-                        value=curr_date.minute,
-                        style={"display": "none"} if not initialize else {"width": "100px", "display": "block"}
-                    )
-                ]),
-                width=3
-            )
-        ]),
-        dbc.Row([
-            dbc.Col([
-                html.Label("Participant ID", style={"display":"none"} if not initialize else {}),
-                dbc.Input(id="input-personal-id", type="text", maxLength=arduino.PERSONAL_ID_MAX_LEN,
-                          placeholder="e.g. SA-014",
-                          style={"display":"none"} if not initialize else {}),
-                dbc.FormFeedback(id="personal-id-feedback", type="invalid")
-            ], width=8
-            )
-        ])
-    ]
-
-    download_view = [
+    return html.Div(fields + [
         html.Div(
-            [
-                dbc.Button(
-                        [html.I(className="fas fa-file-download mr-2"), " Download Data"],
-                        id="download-btn",
-                        className="ms-2 download-btn",
-                        disabled=False,
-                        style={"display": "none"} if not download else {}
-                )
-            ],
-            className="flex-container"
+            dbc.Button([html.I(className="fas fa-file-download"), " Download Data"],
+                       id="download-btn", className="action-btn mt-2",
+                       style=None if visible else HIDDEN),
+            className="flex-container",
         ),
-        dcc.Download(id="download-data")
+        dcc.Download(id="download-data"),
+    ])
+
+
+def modal_footer(primary=None, retry_label="Try Again"):
+    """
+    Footer with the step's primary button. All three buttons always exist (the
+    modal callback listens to each); only `primary` is shown.
+    """
+    def button(label, button_id, name):
+        return dbc.Button(label, id=button_id, className="action-btn ms-2",
+                          style=None if primary == name else HIDDEN)
+
+    warning = None
+    if primary in ("connect", "initialize"):
+        warning = html.Div([html.I(className="fas fa-exclamation-circle"),
+                            " Closing this window cancels the device connection."],
+                           className="disclaimer-msg")
+    return dbc.ModalFooter(
+        [
+            warning,
+            html.Div([
+                button("Connect", "connect-modal", "connect"),
+                button("Initialize", "initialize-btn", "initialize"),
+                button(retry_label, "re-attempt-btn", "retry"),
+            ], className="ms-auto"),
+        ],
+        className="justify-content-between" if primary else "d-none",
+    )
+
+
+def modal_content(mode, step="start", message=None):
+    """
+    Header, body and footer of the action modal.
+
+    mode: "initialize" or "download"
+    step: "start"       - ask to connect the device
+          "initialize"  - start time / participant ID form
+          "initialized" - success; `message` is the formatted start time
+          "download"    - filename and download button
+          "no-data"     - device connected but never initialized
+          "error"       - connection or device error; `message` explains it
+    """
+    body = []
+    footer = modal_footer()
+
+    if step == "start":
+        body = [html.Div("Connect the device to this computer with a USB cable, then click Connect.")]
+        footer = modal_footer("connect")
+    elif step == "initialize":
+        footer = modal_footer("initialize")
+    elif step == "initialized":
+        body = [
+            html.I(className="fas fa-check-circle status-icon status-ok"),
+            html.Div([
+                "The device is set to start logging on ",
+                html.B(message, className="text-primary"),
+                " and has powered down. It will start logging the next time it is powered on.",
+            ], className="mb-2"),
+            html.Div("You may now disconnect the device. To initialize another device, "
+                     "connect it and click Initialize Another."),
+        ]
+        footer = modal_footer("retry", retry_label="Initialize Another")
+    elif step == "no-data":
+        body = [html.Div("This device has not been initialized, so it has no data to download. "
+                         "Initialize it first.")]
+        footer = modal_footer("retry")
+    elif step == "error":
+        body = [
+            html.I(className="fas fa-times-circle status-icon status-error"),
+            html.Div(message, className="status-error text-center mb-2") if message else None,
+            html.Div(NOT_FOUND_HELP),
+        ]
+        footer = modal_footer("retry")
+
+    return [
+        dbc.ModalHeader(dbc.ModalTitle(MODAL_TITLES.get(mode, "Device"), className="modal-header-text")),
+        dbc.ModalBody(body + [initialize_form(step == "initialize"),
+                              download_form(step == "download")]),
+        footer,
     ]
 
-    # Generate modal footer content
-    if footer_view == "None":
-        modal_footer = dbc.ModalFooter(
-            [
-                dbc.Button("Connect", id="connect-modal", style={"display":"none"}),
-                dbc.Button("Initialize", id="initialize-btn", style={"display":"none"}),
-                dbc.Button("Try Again", id="re-attempt-btn", style={"display":"none"})
-            ],
-            style={"height":"0px"}
-        )
-
-    elif footer_view == "Modal Start":
-        modal_footer = dbc.ModalFooter(
-            dbc.Row([
-                dbc.Col(
-                    html.I(className="fas fa-exclamation-circle disclaimer-msg"),
-                    width=1,
-                    align="top"
-                ),
-                dbc.Col(
-                    html.Div("Exiting this pop-up will terminate the Arduino connection process!",
-                             className="disclaimer-msg"
-                    ),
-                    width=8,
-                    align="center"
-                ),
-                dbc.Col(
-                    [
-                        dbc.Button("Connect", id="connect-modal", color="success", className="ms-auto connect-btn"),
-                        dbc.Button("Initialize", id="initialize-btn", style={"display":"none"}),
-                        dbc.Button("Try Again", id="re-attempt-btn", style={"display":"none"})
-                    ],
-                    width=3,
-                    align="center"
-                )
-            ])
-        )
-    elif footer_view == "Initialize":
-        modal_footer = dbc.ModalFooter(
-            dbc.Row([
-                dbc.Col(
-                    html.I(className="fas fa-exclamation-circle disclaimer-msg"),
-                    width=1,
-                    align="top"
-                ),
-                dbc.Col(
-                    html.Div("Exiting this pop-up will terminate the Arduino connection process!",
-                             className="disclaimer-msg"
-                    ),
-                    width=8,
-                    align="center",
-                ),
-                dbc.Col(
-                    [
-                        dbc.Button("Connect", id="connect-modal", style={"display":"none"}),
-                        dbc.Button("Initialize", id="initialize-btn", color="success", style={"padding":"10px", "color": "FloralWhite"}),
-                        dbc.Button("Try Again", id="re-attempt-btn", style={"display":"none"})
-                    ],
-                    width=3,
-                    align="center"
-                )
-            ])
-        )
-
-    return  [
-                dbc.ModalBody(status_msg + initialize_view + download_view, id="modal-body"),
-                modal_footer
-            ]
 
 def recovery_prompt():
     """
@@ -250,91 +168,44 @@ def recovery_prompt():
     start time was lost, so the saved file gets real timestamps.
     """
     return html.Div([
-        html.Div([
-            html.I(className="fas fa-exclamation-triangle", style={"color": "darkorange"}),
-            html.B(" Start time missing", style={"color": "darkorange"}),
-        ]),
+        html.Div([html.I(className="fas fa-exclamation-triangle"), html.B(" Start time missing")],
+                 className="warning-text"),
         html.Div(
             "The device lost its logging start time, but every reading and the time "
             "between readings are intact. Enter the start date and time (Eastern) you chose "
             "when initializing the device to save the file with real timestamps.",
             className="mb-2"
         ),
-        dbc.Row([
-            dbc.Col(html.Div([
-                html.Label("Date", className="dropdown-label"),
-                dcc.DatePickerSingle(id="dl-recovery-date", display_format="YYYY-MM-DD",
-                                     placeholder="Start date"),
-            ]), width=6),
-            dbc.Col(html.Div([
-                html.Label("Hour (ET)", className="dropdown-label"),
-                dcc.Dropdown(id="dl-recovery-hour",
-                             options=[{"label": f"{i:02d}", "value": i} for i in range(24)],
-                             style={"width": "100px"}),
-            ]), width=3),
-            dbc.Col(html.Div([
-                html.Label("Minute", className="dropdown-label"),
-                dcc.Dropdown(id="dl-recovery-minute",
-                             options=[{"label": f"{i:02d}", "value": i} for i in range(60)],
-                             style={"width": "100px"}),
-            ]), width=3),
-        ], className="mb-2"),
+        start_time_inputs("dl-recovery"),
         html.Div([
             dbc.Button([html.I(className="fas fa-file-download"), " Save Corrected File"],
-                       id="dl-recovery-save", className="recovery-btn"),
+                       id="dl-recovery-save", className="action-btn"),
             dbc.Button("Save Without Correcting", id="dl-recovery-save-raw",
                        outline=True, color="secondary", className="ms-2"),
         ]),
         html.Div(id="dl-recovery-status", className="mt-2"),
     ], className="mt-2")
 
+
 def index_layout():
     """
-    Return index page layout, displaying the following features
-    
-        1. Initialize Device
-        2. Data Download
-        3. Data Analysis
+    Home page layout: Initialize Device, Data Download and Data Analysis.
     """
+    def page_button(icon, label, **kwargs):
+        return dbc.Button([html.I(className=f"fas {icon} page-btn-icon"), label],
+                          outline=True, className="m-3 page-btn", **kwargs)
+
     return html.Div(
         [
-            dbc.Button(
-                [
-                    html.I(className="fas fa-microchip page-btn-icon"),
-                    "Initialize Device",
-                ],
-                id="open-initialize-modal",
-                outline=True,
-                className="m-3 page-btn",
-            ),
-            dbc.Button(
-                [
-                    html.I(className="fas fa-download page-btn-icon"),
-                    "Data Download"
-                ],
-                id="open-download-modal",
-                outline=True,
-                className="m-3 page-btn",
-            ),
-            dbc.Button(
-                [
-                    html.I(className="fas fa-chart-bar page-btn-icon"),
-                    "Data Analysis"
-                ],
-                href="/data-analysis",
-                outline=True,
-                className="m-3 page-btn",
-            ),
-            dbc.Modal(
-                [dbc.ModalHeader("Action")] + set_modal_content(),
-                id="action-modal",
-                centered=True,
-                is_open=False
-            )
+            page_button("fa-microchip", "Initialize Device", id="open-initialize-modal"),
+            page_button("fa-download", "Data Download", id="open-download-modal"),
+            page_button("fa-chart-bar", "Data Analysis", href="/data-analysis"),
+            dcc.Store(id="action-modal-mode"),
+            dbc.Modal(modal_content(None), id="action-modal", centered=True, is_open=False),
         ],
-        style={"height": "80vh"},
-        className="flex-container"
+        className="flex-container home-page"
     )
+
 
 def register_index_callbacks():
     @app.callback(
@@ -354,178 +225,114 @@ def register_index_callbacks():
     @app.callback(
             [Output("action-modal", "is_open"),
             Output("action-modal", "children"),
-            Output("action-modal-open-state", "data")],
+            Output("action-modal-mode", "data")],
             [Input("open-initialize-modal", "n_clicks"),
             Input("open-download-modal", "n_clicks"),
             Input("re-attempt-btn", "n_clicks"),
             Input("connect-modal", "n_clicks"),
             Input("initialize-btn", "n_clicks")],
-            [State("action-modal", "is_open"),
-            State("action-modal", "children"),
-            State("action-modal-open-state", "data"),
-            State("date-picker", "date"),
-            State("hour", "value"),
-            State("minute", "value"),
+            [State("action-modal-mode", "data"),
+            State("init-date", "date"),
+            State("init-hour", "value"),
+            State("init-minute", "value"),
             State("input-personal-id", "value")],
             prevent_initial_call=True)
-    def toggle_action_modal(init_click, dl_click, re_attempt_click, connect_click, init_btn_click, is_open, curr_children, json_data, date, hour, minute, personal_id):
+    def toggle_action_modal(_init_click, _dl_click, _retry_click, _connect_click, _init_btn_click,
+                            mode, date, hour, minute, personal_id):
         """
-        Handles all actions related to the modal:
-        - Initialize Device
-        - Download Data
-        - Re-attempt Connection
-        - Connect to Arduino
-        - Start Initialization
+        Drive the modal through its steps: open (Initialize or Download),
+        Connect, Initialize, and Try Again.
         """
-        ctx = callback_context
-        triggered_id = ctx.triggered[0]["prop_id"].split(".")[0]
+        triggered_id = callback_context.triggered_id
+        # Buttons re-created with the modal content report n_clicks=None; only
+        # real clicks count.
+        if not callback_context.triggered[0]["value"]:
+            raise dash.exceptions.PreventUpdate
 
-        if any(x is not None for x in [init_click, dl_click, re_attempt_click,
-                                       connect_click, init_btn_click]):
-            try:
-                # Type 1: "Initialize" button triggered from the index page
-                if triggered_id == "open-initialize-modal":
-                    modal_content = [dbc.ModalHeader("Initialize Arduino", className="modal-header-text")]
-                    modal_content.extend(set_modal_content(footer_view="Modal Start"))
-                    return True, modal_content, json.dumps({"is_open": True})
+        if triggered_id == "open-initialize-modal":
+            mode = "initialize"
+        elif triggered_id == "open-download-modal":
+            mode = "download"
 
-                # Type 2: "Download" button triggered from the index page
-                if triggered_id == "open-download-modal":
-                    modal_content = [dbc.ModalHeader("Download Data", className="modal-header-text")]
-                    modal_content.extend(set_modal_content(footer_view="Modal Start"))
-                    return True, modal_content, json.dumps({"is_open": True})
-                
-                # Type 3: "Try Again" button triggered ("Error" from Arduino connection)
-                if triggered_id == "re-attempt-btn":
-                    updated_children = [curr_children[0]]
-                    updated_children.extend(set_modal_content(footer_view="Modal Start"))
-                    return True, updated_children, json.dumps({"is_open": True})
+        def show(step, message=None):
+            return True, modal_content(mode, step, message), mode
 
-                # Type 4: "Connect" button triggered ("Initialize", "Download")
-                if triggered_id == "connect-modal":
-                    arduino_status = arduino.client.get_status()
-                    if arduino.client.is_connected:
-                        if "Initialize Arduino" in str(curr_children):
-                            if arduino_status in [b"NEED_CONFIGURATION", b"HAS_DATA"]:
-                                updated_children = [curr_children[0]]
-                                updated_children.extend(set_modal_content(initialize=True, footer_view="Initialize"))
-                                return True, updated_children, json.dumps({"is_open": True})
-                        elif "Download Data" in str(curr_children):
-                            if arduino_status == b"NEED_CONFIGURATION":
-                                updated_children = [
-                                    curr_children[0],
-                                    dbc.ModalBody("Need to initiating the device! No data available"),
-                                    curr_children[2]
-                                ]
-                                return True, updated_children, json.dumps({"is_open": True})
-                            if arduino_status == b"HAS_DATA":
-                                updated_children = [curr_children[0]]
-                                updated_children.extend(set_modal_content(download=True))
-                                return True, updated_children, json.dumps({"is_open": True})
+        try:
+            if triggered_id in ("open-initialize-modal", "open-download-modal", "re-attempt-btn"):
+                return show("start")
 
-                # Type 5: "Initialize" button triggered
-                if triggered_id == "initialize-btn":
-                    # An invalid participant ID is flagged on the field itself
-                    # (see validate_personal_id_input); keep the form open.
-                    if arduino.validate_personal_id(personal_id):
-                        return dash.no_update, dash.no_update, dash.no_update
+            if triggered_id == "connect-modal":
+                status = arduino.client.get_status()
+                if status not in (b"NEED_CONFIGURATION", b"HAS_DATA"):
+                    logger.info(f"Device not ready (status {status!r})")
+                    return show("error", "No device found.")
+                if mode == "initialize":
+                    return show("initialize")
+                if status == b"NEED_CONFIGURATION":
+                    return show("no-data")
+                return show("download")
 
-                    # Validate inputs. Note: hour and minute can legitimately be
-                    # 0 (midnight, minute 0), which is falsy, so check
-                    # explicitly for None rather than truthiness.
-                    if any(v is None for v in (date, hour, minute)):
-                        updated_children = [curr_children[0]]
-                        updated_children.extend(set_modal_content(error="Please complete all fields."))
-                        return True, updated_children, json.dumps({"is_open": True})
-                    
-                    # Convert selected date and time to epoch time
-                    selected_datetime = datetime.datetime.strptime(date, "%Y-%m-%d")
-                    selected_datetime = selected_datetime.replace(hour=int(hour), minute=int(minute))
+            if triggered_id == "initialize-btn":
+                # An invalid participant ID is flagged on the field itself
+                # (see validate_personal_id_input); keep the form open.
+                if arduino.validate_personal_id(personal_id):
+                    raise dash.exceptions.PreventUpdate
 
-                    # The entered time is Eastern wall-clock time (DST-aware); the
-                    # device stores the equivalent UTC epoch.
-                    selected_datetime = DISPLAY_TZ.localize(selected_datetime)
-                    epoch_time = int(selected_datetime.timestamp())
+                start = start_time_from_inputs(date, hour, minute)
+                if start is None:
+                    return show("error", "Please choose a start date and time.")
 
-                    # Send initialization command to Arduino
-                    success, message = arduino.client.initialize(epoch_time, personal_id.strip())
-                    if not success:
-                        updated_children = [curr_children[0]]
-                        updated_children.extend(set_modal_content(error=message))
-                        return True, updated_children, json.dumps({"is_open": True})
+                # The entered time is Eastern wall-clock time (DST-aware); the
+                # device stores the equivalent UTC epoch.
+                start = DISPLAY_TZ.localize(start)
+                success, message = arduino.client.initialize(int(start.timestamp()),
+                                                             personal_id.strip())
+                if not success:
+                    return show("error", message)
+                return show("initialized", start.strftime("%A, %B %d at %I:%M %p %Z"))
 
-                    formatted_dt = selected_datetime.strftime("%A, %B %d at %I:%M %p %Z")
-                    updated_children = [curr_children[0]]
-                    updated_children.extend(set_modal_content(selected_dt=formatted_dt))
-                    return True, updated_children, json.dumps({"is_open": True})
+        except dash.exceptions.PreventUpdate:
+            raise
+        except Exception as e:
+            logger.exception("Exception while handling modal action")
+            return show("error", str(e))
 
-            except Exception as e:
-                logger.exception("Exception while handling modal action")
-                updated_children = [curr_children[0]]
-                updated_children.extend(set_modal_content(error=str(e)))
-                return True, updated_children, json.dumps({"is_open": True})
-
-        return is_open, dash.no_update, json_data
-
-    @app.callback(
-        Output("download-btn", "disabled", allow_duplicate=True),
-        [Input("download-btn", "n_clicks")],
-        prevent_initial_call=True
-    )
-    def disable_button(download_click):
-        """
-        Callback to disable the download-btn when clicked
-
-        download_click: "Download" button click instance
-        """
-        if download_click:
-            return True  # Disable button immediately when clicked
-        return False
+        raise dash.exceptions.PreventUpdate
 
     @app.callback(
             [Output("download-data", "data"),
-            Output("download-filename", "style"),
+            Output("download-filename", "invalid"),
             Output("download-file-status", "children"),
-            Output("download-btn", "disabled", allow_duplicate=True),
             Output("download-recovery", "children"),
             Output("download-raw-store", "data")],
-            [Input("download-filename", "value"),
-            Input("download-btn", "n_clicks")],
-            [State("action-modal-open-state", "data")],
+            [Input("download-btn", "n_clicks")],
+            [State("download-filename", "value"),
+            State("action-modal", "is_open")],
+            # Disable the button while the device is being read.
+            running=[(Output("download-btn", "disabled"), True, False)],
             prevent_initial_call=True)
-    def download_data(filename, download_click, modal_open_state):
+    def download_data(download_click, filename, is_open):
         """
-        Download the Arduino data in a specified format
-
-        filename: input filename (e.g., Subject1234_1.1.csv)
-        download_click: "Download" button click instance
-        modal_open_state: State on whether or not the modal is open
+        Read the data from the device and save it as `<filename>.csv`. If the
+        device lost its start time, hold the file and ask for the start first.
         """
-        # Check if modal is open before proceeding
-        if not json.loads(modal_open_state).get("is_open"):
+        if not download_click or not is_open:
             raise dash.exceptions.PreventUpdate
 
-        ctx = callback_context
+        if not filename or not filename.strip():
+            return (None, True, status_message("Please enter a file name.", ok=False), None, None)
 
-        # Check if the download button was clicked.
-        if ctx.triggered and ctx.triggered[0]['prop_id'].endswith('.n_clicks'):
-            if not filename or filename.strip() == "":
-                file_status = html.Div("Please enter a filename.", style={"color": "indianred"})
-                return (None, {"bordercolor": "red", "boxShadow": "0 0 0 0.25rem rgb(255 0 0 / 25%)"}, file_status, False, None, None)
+        try:
+            file_content = arduino.client.download(f"{filename.strip()}.csv")
+        except Exception as e:
+            logger.exception("Download failed")
+            return (None, False, status_message(str(e), ok=False), None, None)
 
-            filename = f"{filename}.csv"
-            file_content = arduino.client.download(filename)
+        _, metadata, error = analysis_helper.parse_text(file_content["content"])
+        if not error and analysis_helper.needs_timestamp_recovery(metadata):
+            return (None, False, None, recovery_prompt(), file_content)
 
-            # Lost start time: hold the file and ask for the real start first.
-            _, metadata, error = analysis_helper.parse_text(file_content["content"])
-            if not error and analysis_helper.needs_timestamp_recovery(metadata):
-                return (None, {}, None, False, recovery_prompt(), file_content)
-
-            # Update the file download status
-            file_status = html.Div("Download Complete", style={"color": "mediumseagreen"})
-            return (file_content, {}, file_status, False, None, None)
-
-        return (None, {}, None, False, dash.no_update, dash.no_update)
+        return (file_content, False, status_message("Download complete."), None, None)
 
     @app.callback(
             [Output("download-data", "data", allow_duplicate=True),
@@ -546,57 +353,33 @@ def register_index_callbacks():
         if not raw_file or not (save_click or save_raw_click):
             raise dash.exceptions.PreventUpdate
 
-        triggered_id = callback_context.triggered[0]["prop_id"].split(".")[0]
-        if triggered_id == "dl-recovery-save-raw":
-            return raw_file, html.Div(
-                "Saved uncorrected. You can rebuild the timestamps later on the Data Analysis page.",
-                style={"color": "mediumseagreen"})
+        if callback_context.triggered_id == "dl-recovery-save-raw":
+            return raw_file, status_message(
+                "Saved uncorrected. You can rebuild the timestamps later on the Data Analysis page.")
 
-        # Hour and minute can legitimately be 0, so check for None explicitly.
-        if date is None or hour is None or minute is None:
-            return dash.no_update, html.Div("Please enter the start date, hour and minute.",
-                                            style={"color": "indianred"})
+        start = start_time_from_inputs(date, hour, minute)
+        if start is None:
+            return dash.no_update, status_message("Please enter the start date, hour and minute.",
+                                                  ok=False)
 
-        start = datetime.datetime.strptime(date[:10], "%Y-%m-%d").replace(
-            hour=int(hour), minute=int(minute))
         df, metadata, error = analysis_helper.parse_text(raw_file["content"])
         if error:
-            return dash.no_update, html.Div(error, style={"color": "indianred"})
+            return dash.no_update, status_message(error, ok=False)
         df, metadata = analysis_helper.recover_timestamps(df, metadata, start)
 
         corrected = dict(raw_file, content=analysis_helper.to_csv_with_metadata(df, metadata))
-        return corrected, html.Div(
-            f"Download Complete: timestamps rebuilt from {df['Timestamp'].iloc[0]} "
-            f"to {df['Timestamp'].iloc[-1]}.",
-            style={"color": "mediumseagreen"})
-
-    @app.callback(
-        Output("action-modal-open-state", "data", allow_duplicate=True),
-        [Input("action-modal", "is_open")],
-        prevent_initial_call=True
-    )
-    def update_modal_state(is_open):
-        """
-        Update the modal's state when the user closes the modal using the default closing button
-
-        is_open: modal open state
-        """
-        return json.dumps({"is_open": is_open})
+        return corrected, status_message(
+            f"Download complete: timestamps rebuilt from {df['Timestamp'].iloc[0]} "
+            f"to {df['Timestamp'].iloc[-1]}.")
 
     @app.callback(
             Output("action-modal-status", "children"),
-            Input("action-modal-open-state", "data"),
+            Input("action-modal", "is_open"),
             prevent_initial_call=True
     )
-    def manage_arduino_connection(json_data):
-        """
-        Terminate the Arduino connection if the modal is closed
-
-        json_data: json wrapping "is_open"
-        """
-        data = json.loads(json_data)
-
-        if data and not data["is_open"]:
+    def release_device_on_close(is_open):
+        """Close the serial connection when the modal is closed."""
+        if not is_open:
             arduino.client.disconnect()
             logger.info("Arduino serial connection disconnected")
         return None

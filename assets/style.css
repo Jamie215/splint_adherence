@@ -1,19 +1,4 @@
-.navbar-brand {
-    font-weight: bold;
-}
-
-.nav-link {
-    font-family: 'Roboto';
-    font-size: 16px;
-    color: mediumaquamarine !important;
-}
-
-.nav-link.active {
-    background-color: white;
-    font-weight: bold;
-    color: midnightblue !important;
-}
-
+/* ---------- Page ---------- */
 body {
     background-color: ghostwhite;
 }
@@ -23,180 +8,83 @@ p {
     font-family: inherit;
 }
 
-.modal-header {
-    padding-top: 5px;
-    padding-bottom: 5px;
-    background-color: mediumaquamarine;
-}
-
-.modal-body {
-    display: block;
-    width: 100%;
-    padding: 20px;
-    text-align: left;
-}
-
-.modal-footer {
-    display: block;
-    height: 80px;
-    width: 100%;
-    padding: 0px 10px 0px 10px;
-}
-
-.modal-header-text {
-    font-size: 18px;
+.navbar-brand {
     font-weight: bold;
-    color: white;
 }
 
+.navbar .nav-link {
+    font-size: 16px;
+    color: rgba(255, 255, 255, 0.85) !important;
+}
+
+.navbar .nav-link.active {
+    font-weight: bold;
+    color: white !important;
+}
+
+.flex-container {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* ---------- Status and feedback ---------- */
+.status-ok {
+    color: mediumseagreen;
+}
+
+.status-error {
+    color: indianred;
+}
+
+.warning-text {
+    color: darkorange;
+}
+
+/* Large check / cross icon at the top of a modal result */
+.status-icon {
+    display: block;
+    margin: 5px 0 10px;
+    font-size: 50px;
+    text-align: center;
+}
+
+.disclaimer-msg {
+    font-size: 14px;
+    color: grey;
+}
+
+/* ---------- Buttons ---------- */
 .btn {
     font-size: 16px;
     font-weight: bold;
 }
 
-.connect-btn {
-    font-size: 16px;
-}
-
-.disclaimer-msg {
-    font-size: 16px;
-    color: grey;
-}
-
-/* DatePicker Related */
-.DateInput {
-    overflow: visible;
-    min-width: 180px;
-}
-
-.DateInput_input {
-    /* padding-top: 4px;
-    padding-bottom: 4px; */
-    padding: .5rem 1.1rem;
-    width: 160px;
-    font-family: 'Roboto';
-    font-size: 1.1rem;
-    font-weight: normal;
-    color: black;
-}
-
-.DateInput_input__focused {
-    min-width: 180px;
-    border-bottom-color: mediumaquamarine;
-}
-
-.DayPickerKeyboardShortcuts_show__bottomRight::before {
-    border-right-color: mediumaquamarine;
-}
-
-.CalendarDay__selected {
-    background-color: mediumaquamarine;
-    color: white;
-}
-
-.CalendarDay__selected_span {
-    background-color: cornflowerblue;
-    color: white;
-}
-
-.CalendarDay__selected:hover {
-    background-color: mediumaquamarine;
-    color: white;
-}
-
-.label {
-    font-family: "Roboto";
-    font-size: 16px;
-}
-
-.Select-value {
-    font-family: "Roboto";
-    font-size: 16px;
-    color: black;
-}
-
-/* Label text for Dropdowns */
-.dropdown-label {
-    display: block;
-    font-weight: bold;
-    color: mediumaquamarine;
-}
-
-/* Icons for Initiation Process*/
-.initiate-success {
-    margin-top: 5px;
-    margin-bottom: 10px;
-    width: 100%;
-    font-size: 50px;
-    text-align: center !important;
-    color: mediumseagreen;
-}
-
-.initiate-fail {
-    margin-top: 5px;
-    margin-bottom: 10px;
-    width: 100%;
-    font-size: 50px;
-    text-align: center !important;
-    color: indianred; 
-}
-
-/* Buttons from "Initialize Arduino */
-.initialize-btn {
-    background-color: steelblue;
-    border-color: steelblue;
-    font-size: 16px;
-    color: white;
-}
-
-/* Button from "Data Download" */
-.download-btn {
-    display: inline-block;
-    margin: 10px;
-    width: 175px;
+/* Primary action buttons (Connect, Initialize, Download, Rebuild, Save, ...) */
+.action-btn,
+.action-btn:disabled {
     background-color: steelblue;
     border-color: steelblue;
     color: white;
 }
 
-/* Button from "Merge Data" */
-.merge-btn {
-    display: inline-block;
-    margin-left: 120px;
-    background-color: steelblue;
-    border-color: steelblue;
-    color: white
-}
-
-/* Buttons for rebuilding lost timestamps and saving the corrected file */
-.recovery-btn {
-    background-color: steelblue;
-    border-color: steelblue;
-    font-size: 16px;
+.action-btn:hover,
+.action-btn:focus {
+    background-color: midnightblue;
+    border-color: midnightblue;
     color: white;
 }
 
-.recovery-btn:disabled {
-    background-color: steelblue;
-    border-color: steelblue;
-    color: white;
+.action-btn:disabled {
     opacity: 0.5;
 }
 
-.initialize-btn:hover, .download-btn:hover, .merge-btn:hover, .recovery-btn:hover {
-    background-color: midnightblue;
+/* ---------- Home page ---------- */
+.home-page {
+    height: 80vh;
+    flex-wrap: wrap;
 }
 
-/* Colour Theme */
-.color-main {
-    color: steelblue;
-}
-
-.color-sub {
-    color: midnightblue;
-}
-
-/* Page Elements */
 .page-btn {
     display: flex;
     flex-direction: column;
@@ -221,137 +109,101 @@ p {
 
 .page-btn-icon {
     display: block;
-    margin-top: 5px;
-    margin-bottom: 20px;
-    width: 100%;
+    margin: 5px 0 20px;
     font-size: 50px;
-    text-align: center !important;
     color: midnightblue;
 }
 
-/* Flex Container */
-.flex-container {
-    display: flex;
-    align-items: center;
-    justify-content: center;
+/* ---------- Modal ---------- */
+.modal-header {
+    padding-top: 5px;
+    padding-bottom: 5px;
+    background-color: mediumaquamarine;
 }
 
-/* Upload Box Related */
+.modal-header-text {
+    font-size: 18px;
+    font-weight: bold;
+    color: white;
+}
+
+/* ---------- Form fields ---------- */
+.dropdown-label {
+    display: block;
+    font-weight: bold;
+    color: mediumaquamarine;
+}
+
+.time-dropdown {
+    width: 100px;
+}
+
+.Select-value {
+    font-size: 16px;
+    color: black;
+}
+
+/* Date picker */
+.DateInput {
+    overflow: visible;
+    min-width: 180px;
+}
+
+.DateInput_input {
+    padding: .5rem 1.1rem;
+    width: 160px;
+    font-family: inherit;
+    font-size: 1.1rem;
+    font-weight: normal;
+    color: black;
+}
+
+.DateInput_input__focused {
+    min-width: 180px;
+    border-bottom-color: mediumaquamarine;
+}
+
+.DayPickerKeyboardShortcuts_show__bottomRight::before {
+    border-right-color: mediumaquamarine;
+}
+
+.CalendarDay__selected,
+.CalendarDay__selected:hover {
+    background-color: mediumaquamarine;
+    color: white;
+}
+
+/* ---------- Data Analysis page ---------- */
+.analysis-page {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
 .upload-box {
-    display: flex;
-    justify-content: center;
-    margin: 10px;
-    padding: 40px 20px 40px 20px !important;
-    border-color: steelblue;
+    margin-bottom: 20px;
+    padding: 20px;
+    border: 2px dashed steelblue;
     border-radius: 10px;
-    border-style: dashed;
-    border-width: 2px;
+    background-color: white;
     text-align: center;
     color: midnightblue;
-}
-
-.upload-box:hover {
     cursor: pointer;
 }
 
-.upload-text {
-    text-align: center;
-    font-size: 25px;
+.upload-link {
     font-weight: bold;
+    color: steelblue;
 }
 
-/* Total Steps Related */
-.content-totalinfo {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-}
-
-.content-patientinfo {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    justify-content: center;
-    margin: 10px;
-    padding: 40px 20px 40px 20px;
-    background-color: white;
-    border-radius: 10px;
-    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
-}
-
-.white-background-1 {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    justify-content: center;
-    margin: 10px;
-    padding: 40px 20px 40px 20px;
-    background-color: white;
-    border-radius: 10px;
-    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
-}
-
-.white-background-2 {
-    margin: 10px;
-    padding: 40px 20px 40px 20px;
-    background-color: white;
-    border-radius: 10px;
-    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
-}
-
-.active-step-slider .rc-slider-mark-text {
-    font-family: 'Roboto';
-    font-size: 16px;
-}
-
-/* Graph Section Related */
-.graph-section {
-    margin-bottom: 10px;
-    padding: 10px;
-    background-color: white;
-    border-radius: 10px;
-    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
-    font-family: 'Roboto';
-}
-
-.row {
-    margin: 10px;
-}
-
-/* Card Related */
-.card-body {
+.panel {
+    margin-bottom: 20px;
     padding: 20px;
-    background-color: floralwhite; 
+    background-color: white;
     border-radius: 10px;
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-    font-family: 'Roboto', sans-serif !important;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
 }
 
-.card-body li {
-    padding: 4px;
-    background-color: floralwhite;
-    font-family: 'Roboto', sans-serif !important;
-    font-size: 18px;
-    color: midnightblue;
-}
-
-.card-title {
-    background-color: mediumaquamarine;
-    font-size: 20px;
-    font-weight: bold;
-    color: floralwhite;
-
-}
-
-.no-padding-row > .col, .no-padding-row > [class*="col-"] {
-    padding-right: 0;
-    padding-left: 0;
-}
-
-.divider {
-    height: 100%;
-    margin: auto;
-    width: 2px;
-    background-color: lightsteelblue;
+.panel-warning {
+    border: 1px solid darkorange;
 }

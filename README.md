@@ -53,6 +53,7 @@ The GUI talks to the device over a simple serial protocol:
 | `pages/index_page.py`                      | Home page: Initialize / Download modal flow and callbacks     |
 | `pages/data_analysis_page.py`              | Upload a CSV and render plots, table, and summaries           |
 | `pages/analysis_helper.py`                 | Parsing, onset/offset detection, gantt and summary helpers    |
+| `pages/components.py`                      | Shared UI pieces (start-time pickers, status messages)        |
 | `assets/`                                  | CSS, heartbeat websocket JS, vendored fonts/theme/icons (offline) |
 | `collect_temperature/collect_temperature.ino` | Arduino firmware for the logger                            |
 | `timezone_config.py`                       | Display time zone (America/New_York) used across the app      |
@@ -129,8 +130,8 @@ python setup.py bdist_mac    # macOS   -> build/Splint_Adherence.app
 Bump `version` in `setup.py`, merge to `main`, then push a matching tag:
 
 ```bash
-git tag v1.2.0
-git push origin v1.2.0
+git tag v1.3.0
+git push origin v1.3.0
 ```
 
 The **Build and Release** GitHub Actions workflow builds both bundles and

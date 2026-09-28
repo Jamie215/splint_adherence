@@ -1,5 +1,5 @@
 """
-Import Libraries
+Entry point: page routing, heartbeat auto-shutdown, and launch.
 """
 # Ensure that the standard Python libraries are compatible with gevent
 from gevent import monkey
@@ -9,23 +9,21 @@ import atexit
 import os
 import sys
 import logging
-import json
 from threading import Timer
 import webbrowser
 
 # In a windowed (Win32GUI) build there is no console attached, so sys.stdout
-# and sys.stderr are None. Some libraries write to them at import time -- most
-# notably numpy.f2py, which scipy pulls in transitively -- which otherwise
-# crashes with "'NoneType' object has no attribute 'write'". Point them at a
-# harmless sink before those imports run. Must happen before importing the
-# pages below (which import scipy).
+# and sys.stderr are None. Some libraries write to them at import time (e.g.
+# numpy.f2py), which otherwise crashes with "'NoneType' object has no attribute
+# 'write'". Point them at a harmless sink before those imports run. Must happen
+# before importing the pages below.
 if sys.stdout is None:
     sys.stdout = open(os.devnull, "w")
 if sys.stderr is None:
     sys.stderr = open(os.devnull, "w")
 
 from dash import html, dcc, Input, Output
-from flask import request, jsonify, render_template_string
+from flask import render_template_string
 import dash_bootstrap_components as dbc
 
 from app_instance import app, socketio, server
@@ -48,21 +46,23 @@ register_index_callbacks()
 app.layout = html.Div([
     dcc.Location(id="url", refresh=False),
     dbc.NavbarSimple(
-        brand="SPLINT ADHERENCE GUI",
+        [
+            dbc.NavItem(dbc.NavLink("Home", href="/", active="exact")),
+            dbc.NavItem(dbc.NavLink("Data Analysis", href="/data-analysis", active="exact")),
+        ],
+        brand="SPLINT ADHERENCE",
         brand_href="/",
         color="mediumaquamarine",
         sticky="top",
         dark=True,
         fluid=True,
-        style={"cursor":"pointer"}
     ),
-    dcc.Store(id="action-modal-open-state", data=json.dumps({"is_open": False})),
     html.Div(id="action-modal-status"),
     html.Div(id="page-content")
 ])
 
 # Route to load the appropriate page layout
-@app.callback(Output("page-content", "children"), [Input("url", "pathname")])
+@app.callback(Output("page-content", "children"), Input("url", "pathname"))
 def display_page(pathname):
     if pathname == "/data-analysis":
         return data_analysis_layout
@@ -86,7 +86,7 @@ def notify_server_timeout():
     """
     Prepare to shut down as no heartbeat received
     """
-    logging.info("No heartbeat received. Preparing to shut down server.")
+    logger.info("No heartbeat received. Preparing to shut down server.")
     socketio.emit("server_shutdown_warning")
     # Give 20 seconds for the client to handle the warning
     Timer(20, shutdown_server).start()
@@ -101,7 +101,7 @@ def shutdown_server():
     there is no in-process "graceful shutdown" hook to call. Exiting the
     process is the reliable option; atexit handlers (see clean_up) still run.
     """
-    logging.info("No heartbeat received; shutting down server.")
+    logger.info("No heartbeat received; shutting down server.")
     os._exit(0)
 
 @server.route("/heartbeat", methods=["POST"])
@@ -109,7 +109,7 @@ def heartbeat():
     """
     Receive heartbeat to determine the interface is still active
     """
-    logging.info("Received heartbeat")
+    logger.debug("Received heartbeat")
     reset_heartbeat_timer()
     return "", 204
 
@@ -128,15 +128,6 @@ def timeout():
                 </body>
             </html>
         """)
-
-@server.route("/log", methods=["POST"])
-def log():
-    """
-    For logging purposes
-    """
-    data = request.get_json()
-    logging.info(f"Client log: {data['message']}")
-    return jsonify(success=True)
 
 def clean_up():
     """
