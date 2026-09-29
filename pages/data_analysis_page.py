@@ -57,7 +57,9 @@ def build_combined_figure(df, baseline, delta, events):
         ("Delta", delta, dict(color="green", dash="dot"), False),
     ]
     for name, y, line, secondary in traces:
-        fig.add_trace(go.Scatter(x=df["Timestamp"], y=y, name=name, line=line),
+        # Proximity readings are whole numbers; temperatures show 2 decimals.
+        fig.add_trace(go.Scatter(x=df["Timestamp"], y=y, name=name, line=line,
+                                 yhoverformat=None if secondary else ".2f"),
                       secondary_y=secondary)
 
     for _, row in events.iterrows():
