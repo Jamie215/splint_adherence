@@ -27,7 +27,11 @@ FIGURE_LAYOUT = dict(
     plot_bgcolor="rgba(240, 240, 240, 0.5)",
     paper_bgcolor="rgba(0, 0, 0, 0)",
     font=dict(color="#2c3e50"),
-    hoverlabel=dict(font=dict(color="white")),
+    # Explicit background: the unified hover box on the combined chart
+    # otherwise inherits the transparent paper colour, which made white hover
+    # text invisible on the white page.
+    hoverlabel=dict(bgcolor="white", bordercolor="#adb5bd", font=dict(color="#2c3e50"),
+                    namelength=-1),
 )
 GRAPH_CONFIG = {"displayModeBar": True}
 WEAR_COLOR = "mediumseagreen"
