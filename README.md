@@ -11,9 +11,13 @@ temperature sensor rises above the ambient baseline while the proximity sensor i
 covered. Onsets and offsets of these events are detected and summarized into
 per-day wear totals and an hour-of-day timeline.
 
-> **Taking over this project?** See [HANDOFF.md](HANDOFF.md) for architecture,
-> firmware lessons learned, algorithm parameters, known limitations, and the
-> release runbook.
+> **Taking over this project?** Start with the
+> [Project Handover](docs/Project_Handover.md) (state at transition, design
+> rationale, open issues, next steps). Operators should use the
+> [SOP: How to Build & Use](docs/SOP_Build_and_Use.md). Word copies of both are
+> in `docs/` (regenerate with `bash docs/build_docs.sh`). See
+> [HANDOFF.md](HANDOFF.md) for architecture, firmware lessons learned, algorithm
+> parameters, known limitations, and the release runbook.
 
 ## How it works
 
