@@ -28,20 +28,20 @@ Key terms used in this SOP:
 
 The most important thing to understand before using the logger: **every time it is powered on, it decides what to do from what happened last time** (Figure 1).
 
-![Figure 1. The logger's states. Each power-on moves it along the arrows. Every timestamp is counted from the moment it is powered on for logging, so that must happen at the start time entered in the app.](images/device_lifecycle.png){width=100%}
+![Figure 1. The logger's states and what triggers each change. The app can connect only in states 1 and 4; in state 2 the board is powered down. Every timestamp is counted from the power-on that starts data collection, so that must happen at the start time entered in the app.](images/device_lifecycle.png){width=100%}
 
 | State | Lights | Can the app see it? | How it gets there |
 |--------|--------|--------|-----------|
-| 1. Idle, no data | Green on | Yes | Freshly flashed board |
-| 2. Powered down | Off | No | Just initialized from the app |
-| 3. Logging | Off (briefly on at power-on) | No | Powered on after Initialize |
-| 4. Idle, has data | Green on | Yes | Powered on (or reset) while logging |
+| 1. Idle; not initialized | Green on | Yes | Freshly flashed board |
+| 2. Idle; initialized | Off (powered down) | No | Initialize in the app (from state 1 or 4) |
+| 3. Data collection | Off (briefly on at power-on) | No | Powered on after Initialize |
+| 4. Idle; collection complete | Green on | Yes | Power-cycle, or any reset, during collection |
 
 What this means in practice:
 
-- A logger that is **logging cannot be found by the app.** Power-cycle it once to reach idle (state 4), then connect.
+- A logger that is **collecting data cannot be found by the app.** Power-cycle it once to reach state 4, then connect.
 - **Any** reset or power interruption during a deployment (a loose battery, a knock on the reset button) ends the recording. The logger goes to idle and does not resume logging.
-- Initializing (state 4 → 1 → 2) **erases the previous recording.** Always download first.
+- Initializing (state 4 → 2) **erases the previous recording.** Always download first.
 
 > **Safety and use limits.** This is a research prototype worn against the skin. **\[TODO\]**: battery type and its safety precautions, the enclosure's protection against moisture and sweat, skin-contact checks and how often to inspect the skin, and any ethics-approval conditions on use.
 
@@ -93,7 +93,7 @@ The Arduino IDE is a free program used to load the firmware onto the logger. It 
 1. Download the project files from the repository (https://github.com/Jamie215/splint_adherence): green **Code** button → **Download ZIP**, then unzip.
 2. Connect the logger to the computer by USB. In the Arduino IDE, open `collect_temperature/collect_temperature.ino`.
 3. Select the board **Arduino Nano 33 BLE** and its port (**Tools → Port**), then click **Upload** (→ arrow). Wait for **Done uploading**.
-4. After flashing, the board restarts in idle mode (state 1): the green light is on.
+4. After flashing, the board restarts in state 1 (idle; not initialized): the green light is on.
 5. Optional check: open **Tools → Serial Monitor** (9600 baud). The board prints **Ready for Connection** when it restarts. Type `?` and press Enter: it replies `Hello World!`. **Close the Serial Monitor** afterwards, because only one program can use the connection at a time.
 
 If the upload fails or no port is listed: check the cable is a data cable and try another USB port. If it still fails, press the board's reset button **twice quickly** (the orange light pulses slowly, meaning it is ready to be flashed), then click Upload again.
@@ -169,7 +169,7 @@ Do not run past about 49 days, and check the end of any recording longer than 36
 
 ## 8.1 Download
 
-1. At the end of the deployment, **power-cycle the logger once** to bring it to idle mode (green light on, Figure 1).
+1. At the end of the deployment, **power-cycle the logger once** to bring it to state 4 (green light on, Figure 1). Note the real time of the power-cycle in the deployment log.
 2. Connect it by USB. In the app, click **Data Download**, then **Connect**.
    - "This device has not been initialized, so it has no data to download": the logger holds no recording.
    - "No device found": see §11.
@@ -177,6 +177,7 @@ Do not run past about 49 days, and check the end of any recording longer than 36
 4. Click **Download Data**. A full month takes about a minute; keep the window open until **Download complete** appears (Figure 7).
 5. The file is saved through the browser, normally to your **Downloads** folder. Move it to the study's data storage.
 6. Open it on the Data Analysis page (§9) to check that it looks complete before the logger is initialized again.
+7. Check the last timestamp in the file against the power-cycle time you noted: it should be no more than about 5 minutes earlier. A larger gap means the logger was powered on late (or early) at the start, or its clock drifted; note it in the log.
 
 ![Figure 6. Download: enter a file name and click Download Data.](images/app_download_form.png){width=55%}
 
@@ -237,7 +238,7 @@ Timestamp,Temperature,ProximityVal
 | `Temperature` | °C, from the HS300x sensor |
 | `ProximityVal` | 0–255 from the APDS9960 sensor; **low = covered** (worn). Its baseline creeps upward over a long deployment; the analysis allows for this. |
 
-- Keep a **deployment log**: device label, participant ID, firmware/library versions, start time entered, actual power-on time, end date, file name, and notes (device knocked, battery changed, splint removed for long periods, skin issues).
+- Keep a **deployment log**: device label, participant ID, firmware/library versions, start time entered, actual power-on time, actual power-cycle (end) time, file name, and notes (device knocked, battery changed, splint removed for long periods, skin issues).
 - Keep the original download untouched; save any corrected copy (`_recovered.csv`) alongside it.
 - **\[TODO\]**: where study data are stored and who can access them (participant data).
 

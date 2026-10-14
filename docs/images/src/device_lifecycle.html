@@ -1,0 +1,70 @@
+<!doctype html>
+<!--
+  Source for docs/images/device_lifecycle.png (Figure 1 in both documents).
+  To re-render after editing: open this file in Chromium and screenshot the
+  #d element at 2x device scale, or with Playwright:
+    page.goto('file:///.../device_lifecycle.html')
+    (await page.$('#d')).screenshot({path: 'device_lifecycle.png'})  // deviceScaleFactor: 2
+  then resize to 1600 px wide.
+-->
+<html><head><meta charset="utf-8">
+<style>
+  body { margin:0; background:#fff; font-family: Calibri, Carlito, "Segoe UI", Arial, sans-serif; }
+  svg text { font-family: inherit; }
+</style></head>
+<body>
+<svg id="d" width="1000" height="600" viewBox="0 0 1000 600" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1F4E79"/>
+    </marker>
+  </defs>
+
+  <!-- States -->
+  <g fill="#0B0B0B" text-anchor="middle">
+    <rect x="20" y="20" width="360" height="130" rx="12" fill="#DCE6F1" stroke="#1F4E79" stroke-width="2"/>
+    <text x="200" y="62" font-size="24" font-weight="700">1. Idle; not initialized</text>
+    <text x="200" y="95" font-size="19">Fresh or just-flashed board</text>
+    <text x="200" y="124" font-size="19">USB visible · green lights on</text>
+
+    <rect x="620" y="20" width="360" height="130" rx="12" fill="#F2F2F2" stroke="#595959" stroke-width="2"/>
+    <text x="800" y="62" font-size="24" font-weight="700">2. Idle; initialized</text>
+    <text x="800" y="95" font-size="19">Powered down, waiting for power-on</text>
+    <text x="800" y="124" font-size="19">USB not visible · lights off</text>
+
+    <rect x="620" y="430" width="360" height="130" rx="12" fill="#E2F0D9" stroke="#2E7D32" stroke-width="2"/>
+    <text x="800" y="472" font-size="24" font-weight="700">3. Data collection</text>
+    <text x="800" y="505" font-size="19">1 reading every 5 min to flash</text>
+    <text x="800" y="534" font-size="19">USB not visible · lights off</text>
+
+    <rect x="20" y="430" width="360" height="130" rx="12" fill="#DCE6F1" stroke="#1F4E79" stroke-width="2"/>
+    <text x="200" y="472" font-size="24" font-weight="700">4. Idle; collection complete</text>
+    <text x="200" y="505" font-size="19">USB visible · green lights on</text>
+    <text x="200" y="534" font-size="19" font-weight="700" fill="#1F4E79">Download (app)</text>
+  </g>
+
+  <!-- Triggers -->
+  <g fill="#1F4E79" font-size="19">
+    <!-- 1 -> 2 -->
+    <line x1="384" y1="85" x2="614" y2="85" stroke="#1F4E79" stroke-width="2.5" marker-end="url(#a)"/>
+    <text x="500" y="72" text-anchor="middle" font-weight="700">Initialize (app)</text>
+
+    <!-- 2 -> 3 -->
+    <line x1="800" y1="154" x2="800" y2="424" stroke="#1F4E79" stroke-width="2.5" marker-end="url(#a)"/>
+    <text x="815" y="270" font-weight="700">Power on at the</text>
+    <text x="815" y="294" font-weight="700">entered start time</text>
+
+    <!-- 3 -> 4 -->
+    <line x1="616" y1="495" x2="386" y2="495" stroke="#1F4E79" stroke-width="2.5" marker-end="url(#a)"/>
+    <text x="500" y="482" text-anchor="middle" font-weight="700">Power-cycle</text>
+    <text x="500" y="524" text-anchor="middle" fill="#B03A2E">or any reset /</text>
+    <text x="500" y="547" text-anchor="middle" fill="#B03A2E">power loss</text>
+
+    <!-- 4 -> 2 -->
+    <line x1="300" y1="426" x2="650" y2="156" stroke="#1F4E79" stroke-width="2.5" stroke-dasharray="9 5" marker-end="url(#a)"/>
+    <rect x="300" y="258" width="300" height="64" fill="#fff"/>
+    <text x="450" y="282" text-anchor="middle" font-weight="700">Initialize (next participant)</text>
+    <text x="450" y="310" text-anchor="middle" fill="#B03A2E">Erases data: download first</text>
+  </g>
+</svg>
+</body></html>
