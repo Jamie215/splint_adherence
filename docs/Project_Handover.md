@@ -9,12 +9,12 @@ subtitle: "State at transition, design decisions and their rationale, and direct
 
 This is the handover record for the project *Measuring Temperature and Muscle Contraction in Custom Orthotic Devices*, specifically its splint adherence logger: a temperature and proximity logger embedded in a thermoplastic splint, and the desktop app that configures it and estimates wear time from its recordings (May 2024 – October 2026). It is composed of the following:
 
-- **Handover summary (§1):** the state of the project at transition, open items, what to do next, and who to contact. Read this first.
+- **Handover summary (§1):** the state of the project at transition, all next steps in one place, and who to contact. Read this first.
 - **Design decisions (§2–§7):** what was decided, why, and which alternatives were considered.
-- **Testing, next steps and future directions (§8–§10):** what has been verified so far, what still needs testing or building, and the areas to explore.
+- **Testing and future directions (§8–§9):** what has been verified so far, and the areas to explore.
 - **Areas to explore (Appendices A–B):** longer notes on the two changes most worth making next.
 
-Companion documents are listed in §1.4, and technical terms are explained under *Key terms*, after §1.
+Companion documents are listed in §1.3, and technical terms are explained under *Key terms*, after §1.
 
 The muscle contraction variant of the project work will not be discussed as it was only explored at a preliminary level and has a different objective, where its focus is observing how much does the splint deactivate the target muscle.
 
@@ -24,7 +24,7 @@ The muscle contraction variant of the project work will not be discussed as it w
 |--------|--------|
 | Build a logger, run a deployment, or download and analyze data | The SOP (`docs/SOP_Build_and_Use.docx`) |
 | Change the app or the firmware | `README.md`, then `HANDOFF.md` (developer reference), then §3–§7 of this document |
-| Plan the next stage of research | §1.2, §1.3, §8–§10 and Appendices A–B |
+| Plan the next stage of research | §1.2 (next steps), then §8, §9 and Appendices A–B |
 | Understand why it works the way it does | §2–§7 |
 
 # 1. State at transition (October 2026)
@@ -37,20 +37,20 @@ The muscle contraction variant of the project work will not be discussed as it w
 - **Automated application tests.** 22 automated tests (wear detection, time zones, timestamp recovery, serial protocol) run on every pull request for maintaining the application.
 - **Documentation.** SOP (`docs/SOP_Build_and_Use`), developer reference (`HANDOFF.md`), README, and this document.
 
-## 1.2 Open items (need testing)
+## 1.2 Next steps
 
-1. **Storage bound not enforced.** `saveTemperatureReading` checks against the whole flash rather than `MAX_DATA_ENTRIES` (15 000). Records beyond about 52 days go into pages that were never erased and are never downloaded. *Test:* initialize a logger with a 1-second interval (a temporary change to `WAKEUP_INTERVAL_SECONDS` in `arduino.py`; no firmware change needed) and leave it collecting for 5 hours, well past 15 000 records. The download should stop at exactly 15 000 rows, which confirms the later readings are silently lost. After the fix, the logger should stop cleanly at 15 000.
-2. **Battery life not measured** over a full deployment. Resting current was below about 750 µA on the bench. *Test:* see §1.3 step 2.
-3. **Wear-detection thresholds not validated.** They were tuned by eye on a small number of recordings, with no ground-truth record of when the splint was actually worn (§5.4). *Test:* Appendix B.
+All remaining work, in recommended order. The design sections (§3–§7) explain why each item exists, and the appendices give the technical detail.
 
-## 1.3 Recommended next steps
+| Item | Status | What to do | Details |
+|------|------|-------------|----|
+| 1. Firmware fixes: wrap-safe sleep, storage limit, start collection at Initialize | Predicted from code; not bench-tested | First confirm the storage issue: initialize a logger with a 1-second interval (temporary change to `WAKEUP_INTERVAL_SECONDS` in `arduino.py`) and leave it for 5 hours; the download should stop at exactly 15 000 rows. Then fix wrap-safe sleep and the storage limit (small, low risk), then start collection at Initialize, in one firmware release. Bench-test for a full month, re-flash loggers after downloading their data, and update the SOP. | Appendix A; §4.4 |
+| 2. Battery life | Not measured; resting current below ~750 µA | One logger on the bench for a full month or until the battery dies, which is the duration of expected battery life. | §4.3 |
+| 3. Wear-detection accuracy | Not validated against ground truth | Collect ground truth on a few deployments (wear diary or reference sensor), check overnight wear especially, and re-tune the thresholds. Add each labelled recording to `tests/` as a regression case and record the new values in `HANDOFF.md` §4. | Appendix B; §5.1, §5.4 |
+| 4. Clock drift | Not measured; expected negligible | At the end of each deployment, note the real time of the power-cycle and compare it with the last timestamp in the file. They should agree within one interval (5 minutes); a larger gap shows drift or a late power-on. | §4.4 |
+| 5. Battery monitoring | Not started | Log the battery voltage with each reading, so a dying battery shows in the data. | – |
+| 6. Mode by USB presence (optional) | Not started | Choose idle or collection at power-up by whether USB is connected, so a reset during a deployment costs only a gap. | Appendix A.2; §4.1 |
 
-1. Fix the firmware issues together, in one firmware release (Appendix A): wrap-safe sleep (§4.4), the storage bound (§1.2), and, ideally, starting the recording at Initialize (§4.4). Upload the updated firmware and bench test.
-2. Measure full battery life: one logger on the bench for a full month or until the battery dies, which is the duration of expected battery life.
-3. Collect ground truth (Appendix B): a few deployments with a wear diary or a second reference sensor. Use them to check the detection algorithm, especially on overnight wear (§5.1), and re-tune the thresholds.
-4. At the end of each deployment, note the real time of the power-cycle and compare it with the last timestamp in the file. They should agree to within one interval (5 minutes); a larger gap shows clock drift or a late power-on. This costs nothing and replaces a dedicated drift test.
-
-## 1.4 Documents & files reference
+## 1.3 Documents & files reference
 
 | Document | Use it for |
 |----------|----------|
@@ -74,7 +74,7 @@ The muscle contraction variant of the project work will not be discussed as it w
 | `docs/` | SOP, this document, figures (`docs/images/`), and the build script |
 | `docs/build_docs.sh` | Regenerates both `.docx` files from their Markdown |
 
-## 1.5 Handover logistics
+## 1.4 Handover logistics
 
 - **Hardware location:** Room 1588, Elborn College, Western University. It may be relocated after October 2026.
 - **Code and documents:** the GitHub repository (Jamie215/splint_adherence) is owned by Jamie Kim. The successor is expected to fork or clone it and continue the work in their own copy. GitHub turns off automated workflows (Actions) in a fork by default; enable them to keep the tests and the Windows/macOS builds running.
@@ -136,7 +136,7 @@ The logger records on its own during the deployment. It only talks to a computer
 
 - **Design Decision:** The logger keeps a mode flag in flash and changes it on every power-up: an initialized logger with no data starts collecting; a collecting logger becomes idle (Figure 1).
 - **Why:** During collection USB is switched off to save power, so the computer can't send a "stop" command. Power-cycling is the only control available without extra buttons.
-- **Limitation:** The logger can't be seen by the app while collecting; power-cycle it first. Any reset or power loss during collection also counts as a power-up, so the recording ends there: the data so far is kept, but nothing more is recorded. Appendix A.2 describes an alternative.
+- **Limitation:** The logger can't be seen by the app while collecting; power-cycle it first. Any reset or power loss during collection also counts as a power-up, so the recording ends there: the data so far is kept, but nothing more is recorded. An alternative is §1.2 item 6.
 
 ## 4.2 Settings stored twice (A/B), with a checksum
 
@@ -154,9 +154,9 @@ The logger records on its own during the deployment. It only talks to a computer
 - **Design Decision:** One reading every 300 s (`WAKEUP_INTERVAL_SECONDS` in `arduino.py`, sent at Initialize). Each record stores seconds elapsed since collection started (from `millis()`), plus temperature and proximity, in 12 bytes; the app adds the start time.
 - **Why:** The board has no real-time clock, so elapsed time is the simplest reliable record. 5 minutes resolves wear periods well enough for daily totals, and fits a month in flash. The analysis infers the real interval from the timestamps, so the interval can be changed without changing the analysis. Figure 2 shows how one reading is stored and downloaded.
 - **Limitations:**
-  - *Start time.* Elapsed time counts from the power-on that starts collection, while the start time is the one typed into the app at Initialize. Any gap between the two shifts every timestamp by that amount, and nothing in the file shows it. Appendix A.1 describes a fix.
-  - *Rollover.* `millis()` is 32-bit and wraps at about 49.7 days, and the sleep check `nextWakeTime > currentTime` is not wrap-safe: expect a burst of readings, then a long gap. The stored elapsed times stay correct. Fix in Appendix A.3; until then, keep deployments to about a month.
-  - *Clock accuracy.* Timestamps rely on the board's oscillator, with no correction. With the board's crystal (tens of ppm) the error is about 1–2 minutes a month, well under one interval; while this is not measured directly, it is a commonly known limitation of using onboard crystal (§1.3 step 4).
+  - *Start time.* Elapsed time counts from the power-on that starts collection, while the start time is the one typed into the app at Initialize. Any gap between the two shifts every timestamp by that amount, and nothing in the file shows it. Fix: §1.2 item 1.
+  - *Rollover.* `millis()` is 32-bit and wraps at about 49.7 days, and the sleep check `nextWakeTime > currentTime` is not wrap-safe: expect a burst of readings, then a long gap. The stored elapsed times stay correct. Fix: §1.2 item 1; until then, keep deployments to about a month.
+  - *Clock accuracy.* Timestamps rely on the board's oscillator, with no correction. With the board's crystal (tens of ppm) the error is about 1–2 minutes a month, well under one interval; while this is not measured directly, it is a commonly known limitation of using onboard crystal (check: §1.2 item 4).
 
 ![Figure 2. One reading, from flash to the downloaded CSV.](images/data_row.png){width=100%}
 
@@ -173,7 +173,7 @@ Full parameter table: `HANDOFF.md` §4.
 
 - **Design Decision:** Take room temperature as the rolling minimum over about 2 hours, and look at the rise above it (delta). An event starts when the proximity sensor is covered, the temperature has risen over the last ~15 minutes, and either the jump is ≥ 0.8 °C in one sample or the rise is ≥ 3 °C. It ends when the proximity sensor is uncovered, or the temperature is falling fast (≥ 0.4 °C per sample) and is near baseline or below 80 % of the event's peak rise.
 - **Why:** Room temperature changes over the day, so a fixed threshold would fail; the rolling minimum follows it. The 15-minute trend check stops cooling slopes from triggering false onsets.
-- **Limitation:** After about an hour of continuous wear the 2-hour window holds only "worn" samples, so the baseline rises to skin temperature and delta falls to about 0. From then on, a single drop of 0.4 °C between samples ends the event, and it cannot restart (that needs delta ≥ 3 °C or a jump ≥ 0.8 °C). On synthetic 8-hour overnight wear, noise with a standard deviation of 0.15 °C split the nights into short pieces; with 0.04 °C they were detected whole. Possible fixes are in Appendix B.2.
+- **Limitation:** After about an hour of continuous wear the 2-hour window holds only "worn" samples, so the baseline rises to skin temperature and delta falls to about 0. From then on, a single drop of 0.4 °C between samples ends the event, and it cannot restart (that needs delta ≥ 3 °C or a jump ≥ 0.8 °C). On synthetic 8-hour overnight wear, noise with a standard deviation of 0.15 °C split the nights into short pieces; with 0.04 °C they were detected whole. Possible fixes are in Appendix B.2; validation is §1.2 item 3.
 
 ## 5.2 Proximity as a gate
 
@@ -213,21 +213,7 @@ All thresholds were set by inspecting a small number of recordings. A finer tuni
 | Proximity drift | Seen on a 35-day recording; handled in analysis (§5.3), covered by a test |
 | Analysis code | 22 automated tests (detection, drift invariance, DST, legacy files, recovery, serial parsing) |
 
-# 9. Next steps
-
-What still needs testing, and the changes that should come next. §1.3 gives the recommended order.
-
-| Item | Status | What to do |
-|--------|--------|-------------|
-| Battery life | Not measured | One logger on the bench for a full month or until the battery dies (§1.3) |
-| Storage bound (~52 d) | Predicted from code | 1-second-interval test (§1.2), then the firmware fix (Appendix A.3) |
-| Clock rollover (~49.7 d) | Predicted from code | Wrap-safe sleep and an offset test across the wrap (Appendix A.3) |
-| Wear-detection accuracy | Not validated against ground truth | Collect ground truth and re-tune, including long-wear handling (Appendix B) |
-| Clock drift | Not measured; expected negligible (§4.4) | Compare the end-of-deployment power-cycle time with the last timestamp (§1.3) |
-| Firmware robustness | Not started | Start collection at Initialize; optionally, choose idle/collection by USB presence (Appendix A) |
-| Battery monitoring | Not started | Log the battery voltage with each reading, so a dying battery shows in the data |
-
-# 10. Directions to explore
+# 9. Directions to explore
 
 | Area | Recommendation |
 |-------|---------------|
@@ -237,7 +223,7 @@ What still needs testing, and the changes that should come next. §1.3 gives the
 
 # Appendix A — Firmware robustness
 
-**Status:** Identified from the code (§1.2 item 1; §4.1; §4.4). Not yet implemented.
+**Status:** Explained in §4.1 and §4.4; scheduled as §1.2 items 1 and 6. Not yet implemented.
 
 ## A.1 Start the recording at Initialize
 
@@ -260,13 +246,9 @@ This makes a reset during a deployment cost only a gap instead of the rest of th
 - Wrap-safe sleep: `if ((int32_t)(nextWakeTime - currentTime) > 0)`. Test across the wrap with a temporary offset of about 2³² − 10 min added to `millis()` in the logging path.
 - Stop at `MAX_DATA_ENTRIES` in `saveTemperatureReading`, or erase all the pages that may be written.
 
-## A.4 Next steps
-
-Implement A.3 first (small, low risk), then A.1, bench-test for a full month, and update the SOP (§1.1, §6, §7).
-
 # Appendix B — Ground truth and re-tuning the detector
 
-**Status:** Needed before wear times are reported as results.
+**Status:** Needed before wear times are reported as results; scheduled as §1.2 item 3.
 
 ## B.1 Collecting ground truth
 
@@ -279,7 +261,3 @@ Implement A.3 first (small, low risk), then A.1, bench-test for a full month, an
 - Per-event agreement (onset/offset within ±1 sample) and per-day wear minutes.
 - **Long wear:** whether overnight wear is split or cut short (§5.1). Possible fixes: a longer baseline window, freezing the baseline while an event is in progress, or requiring two consecutive cooling samples before ending an event.
 - False positives in warm environments, and false negatives with a loose splint.
-
-## B.3 Next steps
-
-Add each labelled recording to `tests/` as a regression case, then re-tune the thresholds in `detect_onsets_offsets` against them and record the new values in `HANDOFF.md` §4.
