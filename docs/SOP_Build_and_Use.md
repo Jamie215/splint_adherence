@@ -213,7 +213,7 @@ All times are Eastern time, with daylight-saving changes handled. The screenshot
 
 ![Figure 11. Wear periods by hour of day (simulated data).](images/app_analysis_hourly.png){width=100%}
 
-> **Treat the detected wear times as estimates.** The detection thresholds were tuned on a small amount of data and have not been checked against a record of when the splint was really worn. Long continuous wear (e.g. overnight) may be split or cut short (Project Handover, §1.2). Look at the traces, not only the totals.
+> **Treat the detected wear times as estimates.** The detection thresholds were tuned on a small amount of data and have not been checked against a record of when the splint was really worn. Long continuous wear (e.g. overnight) may be split or cut short (Project Handover, §5.1). Look at the traces, not only the totals.
 
 The page also opens older files: files without a proximity column (treated as covered throughout) and files downloaded before app v1.2.0 (timestamps converted from UTC to Eastern automatically).
 
@@ -253,7 +253,7 @@ Timestamp,Temperature,ProximityVal
 | Initialize does nothing | Participant ID is empty or has spaces or other characters | Use letters, digits, `-` or `_` only (max 15) |
 | Start time `UNKNOWN`, or dates in 1970 / 2106 | The logger lost its settings (usually re-flashed over old firmware) | Rebuild the timestamps from the deployment log (§8.2) |
 | Recording shorter than expected | The logger was reset or lost power during the deployment (it then stops logging) | Check the battery and connections; note it in the log |
-| All timestamps shifted by a fixed amount | The logger was powered on at a different time than the start time entered | Correct using the actual power-on time from the deployment log **\[TODO\]**: no tool for this yet; see Project Handover §1.2 |
+| All timestamps shifted by a fixed amount | The logger was powered on at a different time than the start time entered | Correct using the actual power-on time from the deployment log **\[TODO\]**: no tool for this yet; see Project Handover §4.4 |
 | Burst of readings or a long gap near day 49–50 | Timer rollover (§7.2) | Use data before day ~49 only |
 | Little or no wear detected although the splint was worn | Sensors not against the skin, or a weak temperature rise | Check mounting (§3.2); look at the raw traces |
 | Browser shows "Interface Terminated" | The app shut down after its tab was closed or idle | Close the tab and start the app again |
