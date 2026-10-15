@@ -9,12 +9,12 @@ subtitle: "State at transition, design decisions and their rationale, and direct
 
 This is the handover record for the project *Measuring Temperature and Muscle Contraction in Custom Orthotic Devices*, specifically its splint adherence logger: a temperature and proximity logger embedded in a thermoplastic splint, and the desktop app that configures it and estimates wear time from its recordings (May 2024 – October 2026). It is composed of the following:
 
-- **Handover summary (§1):** the state of the project at transition, all next steps in one place, and who to contact. Read this first.
-- **Design decisions (§2–§7):** what was decided, why, and which alternatives were considered.
-- **Testing and future directions (§8–§9):** what has been verified so far, and the areas to explore.
-- **Areas to explore (Appendices A–B):** longer notes on the two changes most worth making next.
+- **Handover summary (§1):** where the project stands, what has been tested, all next steps in one place, and who to contact. Read this first.
+- **Problem and goals (§2):** what the system is for.
+- **Design decisions (§3–§7):** what was decided, why, and which alternatives were considered.
+- **Directions to explore (§8):** larger changes worth considering later.
 
-Companion documents are listed in §1.3, and technical terms are explained under *Key terms*, after §1.
+Companion documents are listed in §1.3, and terms are explained under *Key terms*, after §1.
 
 The muscle contraction variant of the project work will not be discussed as it was only explored at a preliminary level and has a different objective, where its focus is observing how much does the splint deactivate the target muscle.
 
@@ -22,57 +22,42 @@ The muscle contraction variant of the project work will not be discussed as it w
 
 | If you want to… | Start with |
 |--------|--------|
+| Know whether the system is ready and what is left to do | §1 |
 | Build a logger, run a deployment, or download and analyze data | The SOP (`docs/SOP_Build_and_Use.docx`) |
 | Change the app or the firmware | `README.md`, then `HANDOFF.md` (developer reference), then §3–§7 of this document |
-| Plan the next stage of research | §1.2 (next steps), then §8, §9 and Appendices A–B |
 | Understand why it works the way it does | §2–§7 |
 
 # 1. State at transition (October 2026)
 
+**Summary.** The system works end to end: a logger can be set up with the app, worn in the splint for up to about a month, and downloaded, and the app turns the recording into daily wear time and an hour-by-hour picture of when the splint was worn. Two loggers have been built. Wear times are estimates in 5-minute steps (wear shorter than about 10 minutes is not counted), and the detection has not yet been fully validated against a record of actual wear. Before a larger study, the known firmware issues should be fixed, battery life measured, and wear detection validated (§1.2).
+
 ## 1.1 Current state
 
-- **Working logger.** Arduino Nano 33 BLE Sense (nRF52840) with its built-in HS300x temperature and APDS9960 proximity sensors. It records one reading every 5 minutes to its own flash memory, for up to about 52 days of storage, and is configured and read over USB. Firmware: `collect_temperature/collect_temperature.ino`.
-- **Desktop app v1.3.0.** *Splint Adherence* (Dash/Flask, opens in the browser, works offline). It initializes loggers, downloads recordings to CSV, recovers lost start times, and shows detected wear events, daily wear totals and an hour-of-day timeline. Built for Windows and macOS by GitHub Actions on each version tag, and published on the repository's Releases page.
-- **Preliminary test use.** Recordings of up to about 36 days have been collected and analyzed, and the analysis was hardened against what they showed (proximity drift, §5.3). There are two loggers built, where one of them needs re-connection at the rear 3.3 V trace to update the firmware while the other one is ready for deployment. The logger that requires updated firmware has a tag attached noting that its firmware needs updating.
-- **Automated application tests.** 22 automated tests (wear detection, time zones, timestamp recovery, serial protocol) run on every pull request for maintaining the application.
-- **Documentation.** SOP (`docs/SOP_Build_and_Use`), developer reference (`HANDOFF.md`), README, and this document.
+- **Working logger.** Arduino Nano 33 BLE Sense (nRF52840) with its built-in HS300x temperature and APDS9960 proximity sensors. It records one reading every 5 minutes to its own flash memory, for up to about 52 days of storage, and is configured and read over USB.
+- **Desktop application (v1.3.0).** It initializes loggers, downloads recordings to CSV, recovers lost start times, and shows detected wear events, daily wear totals and an hour-of-day timeline. Built for Windows and macOS by GitHub Actions on each version tag, and published on the repository's Releases page.
+- **Preliminary test.** Recordings of up to about 36 days have been collected and analyzed to tune the wearing detection algorithm. There are two loggers built, where one of them needs reconnection at the rear 3.3 V trace to update the firmware while the other one is ready for deployment. The logger that requires updated firmware has a tag attached noting that its firmware needs updating.
+- **Tested so far.** Resting current below about 750 µA on the bench. The proximity reading was found to drift upward over a 35-day recording, and the analysis now allows for it (§5.3). 22 automated tests (wear detection, time zones, timestamp recovery, serial protocol) run on every change to the app.
 
 ## 1.2 Next steps
 
-All remaining work, in recommended order. The design sections (§3–§7) explain why each item exists, and the appendices give the technical detail.
+All remaining work, in recommended order.
 
 | Item | Status | What to do | Details |
-|------|------|-------------|----|
-| 1. Firmware fixes: wrap-safe sleep, storage limit, start collection at Initialize | Predicted from code; not bench-tested | First confirm the storage issue: initialize a logger with a 1-second interval (temporary change to `WAKEUP_INTERVAL_SECONDS` in `arduino.py`) and leave it for 5 hours; the download should stop at exactly 15 000 rows. Then fix wrap-safe sleep and the storage limit (small, low risk), then start collection at Initialize, in one firmware release. Bench-test for a full month, re-flash loggers after downloading their data, and update the SOP. | Appendix A; §4.4 |
-| 2. Battery life | Not measured; resting current below ~750 µA | One logger on the bench for a full month or until the battery dies, which is the duration of expected battery life. | §4.3 |
-| 3. Wear-detection accuracy | Not validated against ground truth | Collect ground truth on a few deployments (wear diary or reference sensor), check overnight wear especially, and re-tune the thresholds. Add each labelled recording to `tests/` as a regression case and record the new values in `HANDOFF.md` §4. | Appendix B; §5.1, §5.4 |
-| 4. Clock drift | Not measured; expected negligible | At the end of each deployment, note the real time of the power-cycle and compare it with the last timestamp in the file. They should agree within one interval (5 minutes); a larger gap shows drift or a late power-on. | §4.4 |
-| 5. Battery monitoring | Not started | Log the battery voltage with each reading, so a dying battery shows in the data. | – |
-| 6. Mode by USB presence (optional) | Not started | Choose idle or collection at power-up by whether USB is connected, so a reset during a deployment costs only a gap. | Appendix A.2; §4.1 |
+|----------|----------|------------------------------|-----------|
+| 1. Firmware fixes (timing, storage, start time) | Predicted from code; not bench-tested | *Why:* recordings longer than about 7 weeks may be corrupted, and timestamps are only right if the logger is powered on at the entered start time. First confirm the storage issue: initialize a logger with a 1-second interval (temporary change to `WAKEUP_INTERVAL_SECONDS` in `arduino.py`) and leave it for 5 hours; the download should stop at exactly 15 000 rows. Then fix wrap-safe sleep and the storage limit (small, low risk), then start data collection at Initialize, in one firmware release. Bench-test for a full month, re-flash loggers after downloading their data, and update the SOP. | §4.4; `HANDOFF.md` §8 |
+| 2. Battery life | Not measured with the latest firmware; resting current below ~750 µA | *Why:* sets how long a deployment can safely run. One logger on the bench for a full month or until the battery dies, which is the duration of expected battery life. | §4.3 |
+| 3. Wear-detection accuracy | Not fully validated | *Why:* needed before wear times are reported as study results. Collect ground truth on a few deployments (wear diary or reference sensor), check overnight wear especially, and re-tune the thresholds accordingly. | §5; SOP Appendix C |
+| 4. Clock drift | Not measured; expected negligible | *Why:* confirms the timestamps stay accurate over a deployment, at no extra cost. At the end of each deployment, note the real time of the power-cycle and compare it with the last timestamp in the file. They should agree within one interval (5 minutes); a larger gap shows drift or a late power-on. | §4.4 |
+| 5. Mode by USB presence (optional) | Not started | *Why:* today a reset or power loss during a deployment ends the recording. Choose idle or data collection at power-up by whether USB is connected, so a reset costs only a gap. | §4.1; `HANDOFF.md` §8 |
 
-## 1.3 Documents & files reference
+## 1.3 Documents
 
 | Document | Use it for |
 |----------|----------|
-| `docs/SOP_Build_and_Use.md` (+ `.docx`) | Building the logger, deployments, download, analysis, troubleshooting |
+| `docs/SOP_Build_and_Use.md` (+ `.docx`) | Building the logger, deployments, download, analysis, troubleshooting, tuning the detection |
 | `docs/Project_Handover.md` (+ `.docx`) | This document: state, design rationale, future directions |
-| `HANDOFF.md` | Developer reference: file roles, flash layout, algorithm parameters table, vendored assets, release runbook |
+| `HANDOFF.md` | Developer reference: code layout, flash layout, algorithm parameters, known firmware issues and fixes, release runbook |
 | `README.md` | Overview, quick start, serial protocol, data format |
-
-| File / folder | Contents |
-|----------|----------|
-| `collect_temperature/collect_temperature.ino` | Logger firmware |
-| `app.py`, `app_instance.py` | App entry point (routing, heartbeat shutdown), shared Dash/Flask/SocketIO objects |
-| `arduino.py` | `ArduinoClient`: port search, initialize, download; participant-ID rules |
-| `pages/index_page.py` | Home page: Initialize and Download flows |
-| `pages/data_analysis_page.py` | Data Analysis page: plots, events table, summaries |
-| `pages/analysis_helper.py` | Parsing, time zones, wear detection, timestamp recovery |
-| `timezone_config.py` | Display time zone (America/New_York) |
-| `tests/` | pytest suite (no hardware) |
-| `setup.py` | App version and packaging settings used by the release workflow |
-| `.github/workflows/tests.yml`, `build-release.yml` | Tests on every pull request; Windows/macOS builds on a `v*` tag |
-| `docs/` | SOP, this document, figures (`docs/images/`), and the build script |
-| `docs/build_docs.sh` | Regenerates both `.docx` files from their Markdown |
 
 ## 1.4 Handover logistics
 
@@ -84,19 +69,22 @@ All remaining work, in recommended order. The design sections (§3–§7) explai
 
 | Term | Meaning |
 |-----|-----------|
-| Logger / device | The Arduino Nano 33 BLE Sense board with programmed hardware, designed to be in the splint. |
+| Logger / device | The Arduino Nano 33 BLE Sense board with programmed hardware, designed to be in the splint |
+| App (GUI) | The desktop application used to set up loggers, download recordings and view the analysis |
+| Deployment | One period during which a participant wears the splint with a logger collecting data |
+| Wear event | A period the app judges the splint was worn, from its start (onset) to its end (offset) |
+| Ground truth | An independent record of when the splint was actually worn (e.g. a diary or a second sensor), used to check the detection |
 | HS300x | The board's temperature (and humidity) sensor; only temperature is used |
-| APDS9960 | The board's proximity/light/gesture sensor; only proximity is used. Reads 0–255, **low = something close** (splint worn) |
+| APDS9960 | The board's proximity sensor. Reads 0–255; a low value means the splint is worn |
 | Firmware | The program running on the logger (an Arduino "sketch"). Changing it means re-flashing every logger |
 | Flash | The logger's built-in memory, which keeps the settings and readings without power |
 | Initialize | Sending the start time and participant ID to the logger; erases the previous recording |
-| Logging / idle mode | Recording with USB off / waiting for the app with USB on. Toggled on every power-up |
+| Data collection / idle | The logger recording with USB off / waiting for the app with USB on. Switches on every power-up |
 | Power-cycle | Turning the logger off and on |
-| Serial (USB serial) | The text connection over the USB cable between the app and the logger (9600 baud). The app sends one-character commands: `?` handshake, `!` status, `i` initialize, `r` read data |
+| Serial (USB serial) | The text connection over the USB cable between the app and the logger (9600 baud) |
 | `millis()` | The board's millisecond counter since power-on; the logger's only clock. 32 bits, so it wraps after ~49.7 days |
 | Epoch | Time as seconds since 1 Jan 1970 UTC; how the logger stores the start time |
 | Baseline / delta | The rolling-minimum temperature (taken as room temperature), and the temperature above it |
-| Onset / offset | The start / end of a detected wear event |
 | Dash / Flask | The Python web frameworks the app is built on; the app runs a local web server and opens in the browser |
 
 # 2. Problem and goals
@@ -114,6 +102,8 @@ The goal is to measure **how consistently a patient wears a prescribed splint** 
 
 # 3. System architecture
 
+Sections 3–7 explain the technical design; readers who only need the status can stop after §2.
+
 The logger records on its own during the deployment. It only talks to a computer before (Initialize) and after (Download) a deployment, over USB serial (Figure 1).
 
 ![Figure 1. The logger's states and what triggers each change.](images/device_lifecycle.png){width=100%}
@@ -122,7 +112,7 @@ The logger records on its own during the deployment. It only talks to a computer
 
 - **Design Decision:** The logger only measures and stores. All interpretation (time zones, wear detection, summaries) happens in the app.
 - **Why:** This enables fine-tuning the detection algorithm as raw recordings are preserved. It also keeps the firmware small and simple, ideal for low power mode operation.
-- **Alternatives:** Detecting wear on the board; streaming over Bluetooth to a phone (needs the patient's phone and consumes more power).
+- **Alternatives:** Detecting wear directly on the board; streaming over Bluetooth to a phone (needs the patient's phone and consumes more power).
 
 ## 3.2 Hardware
 
@@ -134,9 +124,9 @@ The logger records on its own during the deployment. It only talks to a computer
 
 ## 4.1 Mode chosen by power-up
 
-- **Design Decision:** The logger keeps a mode flag in flash and changes it on every power-up: an initialized logger with no data starts collecting; a collecting logger becomes idle (Figure 1).
-- **Why:** During collection USB is switched off to save power, so the computer can't send a "stop" command. Power-cycling is the only control available without extra buttons.
-- **Limitation:** The logger can't be seen by the app while collecting; power-cycle it first. Any reset or power loss during collection also counts as a power-up, so the recording ends there: the data so far is kept, but nothing more is recorded. An alternative is §1.2 item 6.
+- **Design Decision:** The logger keeps a mode flag in flash and changes it on every power-up: an initialized logger with no data starts data collection; a logger collecting data becomes idle (Figure 1).
+- **Why:** During data collection USB is switched off to save power, so the computer can't send a "stop" command. Power-cycling is the only control available without extra buttons.
+- **Limitation:** The logger can't be seen by the app during data collection; power-cycle it first. Any reset or power loss during data collection also counts as a power-up, so the recording ends there: the data so far is kept, but nothing more is recorded. An alternative is §1.2 item 5.
 
 ## 4.2 Settings stored twice (A/B), with a checksum
 
@@ -146,19 +136,19 @@ The logger records on its own during the deployment. It only talks to a computer
 
 ## 4.3 Low power by switching peripherals off
 
-- **Design Decision:** During collection the firmware disables USB, UART, the radio and other unused peripherals, and waits between readings with `delay()`. Resting current measured below about 750 µA.
+- **Design Decision:** During data collection the firmware disables USB, UART, the radio and other unused peripherals, and waits between readings with `delay()`. Resting current measured below about 750 µA.
 - **Why:** A deeper sleep (RTC2 timer + `__WFI`) was tried, but the Arduino never woke up to resume collecting data once in deep sleep; it may still be worth revisiting to further optimize battery life.
 
 ## 4.4 Fixed 5-minute interval, elapsed-time records
 
-- **Design Decision:** One reading every 300 s (`WAKEUP_INTERVAL_SECONDS` in `arduino.py`, sent at Initialize). Each record stores seconds elapsed since collection started (from `millis()`), plus temperature and proximity, in 12 bytes; the app adds the start time.
-- **Why:** The board has no real-time clock, so elapsed time is the simplest reliable record. 5 minutes resolves wear periods well enough for daily totals, and fits a month in flash. The analysis infers the real interval from the timestamps, so the interval can be changed without changing the analysis. Figure 2 shows how one reading is stored and downloaded.
+![Figure 2. One reading, from flash to the downloaded CSV.](images/data_row.png){width=100%}
+
+- **Design Decision:** One reading every 300 seconds (5 minutes) (`WAKEUP_INTERVAL_SECONDS` in `arduino.py`, sent at Initialize). Each record stores seconds elapsed since data collection started (from `millis()`), plus temperature and proximity, in 12 bytes; the app adds the start time.
+- **Why:** The board has no real-time clock, so elapsed time is the simplest reliable record. 5 minutes resolves wear periods well enough for daily totals, and fits a month in flash. The analysis infers the real interval from the timestamps, so the interval can be changed without changing the analysis.
 - **Limitations:**
-  - *Start time.* Elapsed time counts from the power-on that starts collection, while the start time is the one typed into the app at Initialize. Any gap between the two shifts every timestamp by that amount, and nothing in the file shows it. Fix: §1.2 item 1.
+  - *Start time.* Elapsed time counts from the power-on that starts data collection, while the start time is the one typed into the app at Initialize. Any gap between the two shifts every timestamp by that amount, and nothing in the file shows it. Fix: §1.2 item 1.
   - *Rollover.* `millis()` is 32-bit and wraps at about 49.7 days, and the sleep check `nextWakeTime > currentTime` is not wrap-safe: expect a burst of readings, then a long gap. The stored elapsed times stay correct. Fix: §1.2 item 1; until then, keep deployments to about a month.
   - *Clock accuracy.* Timestamps rely on the board's oscillator, with no correction. With the board's crystal (tens of ppm) the error is about 1–2 minutes a month, well under one interval; while this is not measured directly, it is a commonly known limitation of using onboard crystal (check: §1.2 item 4).
-
-![Figure 2. One reading, from flash to the downloaded CSV.](images/data_row.png){width=100%}
 
 ## 4.5 Robust proximity reads
 
@@ -167,13 +157,15 @@ The logger records on its own during the deployment. It only talks to a computer
 
 # 5. Wear-detection algorithm
 
-Full parameter table: `HANDOFF.md` §4.
+Full parameter table: `HANDOFF.md` §4. How to re-tune: SOP Appendix C.
 
 ## 5.1 Temperature above a rolling baseline
 
 - **Design Decision:** Take room temperature as the rolling minimum over about 2 hours, and look at the rise above it (delta). An event starts when the proximity sensor is covered, the temperature has risen over the last ~15 minutes, and either the jump is ≥ 0.8 °C in one sample or the rise is ≥ 3 °C. It ends when the proximity sensor is uncovered, or the temperature is falling fast (≥ 0.4 °C per sample) and is near baseline or below 80 % of the event's peak rise.
 - **Why:** Room temperature changes over the day, so a fixed threshold would fail; the rolling minimum follows it. The 15-minute trend check stops cooling slopes from triggering false onsets.
-- **Limitation:** After about an hour of continuous wear the 2-hour window holds only "worn" samples, so the baseline rises to skin temperature and delta falls to about 0. From then on, a single drop of 0.4 °C between samples ends the event, and it cannot restart (that needs delta ≥ 3 °C or a jump ≥ 0.8 °C). On synthetic 8-hour overnight wear, noise with a standard deviation of 0.15 °C split the nights into short pieces; with 0.04 °C they were detected whole. Possible fixes are in Appendix B.2; validation is §1.2 item 3.
+- **Limitations:**
+  - *Short wear.* Events shorter than 2 readings are dropped, so wear periods under about 10 minutes are not counted, and every start and end time is accurate to one 5-minute step.
+  - *Long wear.* After about an hour of continuous wear the 2-hour window holds only "worn" samples, so the baseline rises to skin temperature and delta falls to about 0. From then on, a single drop of 0.4 °C between samples ends the event, and it cannot restart (that needs delta ≥ 3 °C or a jump ≥ 0.8 °C). On synthetic 8-hour overnight wear, noise with a standard deviation of 0.15 °C split the nights into short pieces; with 0.04 °C they were detected whole. Possible fixes are in SOP Appendix C; validation is §1.2 item 3.
 
 ## 5.2 Proximity as a gate
 
@@ -187,7 +179,7 @@ Full parameter table: `HANDOFF.md` §4.
 
 ## 5.4 Thresholds are empirical
 
-All thresholds were set by inspecting a small number of recordings. A finer tuning may be required based on the larger sample data. Appendix B describes further on how.
+All thresholds were set by inspecting a small number of recordings. A finer tuning may be required based on the larger sample data; SOP Appendix C describes how.
 
 # 6. Time handling
 
@@ -204,60 +196,10 @@ All thresholds were set by inspecting a small number of recordings. A finer tuni
 - **Automated releases.** GitHub Actions builds stand-alone Windows and macOS programs on each `v*` tag, with Python included, so staff need no Python (SOP Appendix B).
 - **Participant IDs.** Letters, digits, `-` and `_`, up to 15 characters: they go into the CSV header and often into file names, where commas or spaces would cause trouble.
 
-# 8. Testing and validation to date
-
-| Area | Status |
-|----------|----------|
-| Logging over a deployment | Recordings up to ~36 days collected and analyzed |
-| Resting current | Below ~750 µA on the bench |
-| Proximity drift | Seen on a 35-day recording; handled in analysis (§5.3), covered by a test |
-| Analysis code | 22 automated tests (detection, drift invariance, DST, legacy files, recovery, serial parsing) |
-
-# 9. Directions to explore
+# 8. Directions to explore
 
 | Area | Recommendation |
 |-------|---------------|
 | Wireless download | Use the board's Bluetooth to download without opening the splint; adds power and pairing complexity |
 | Real-time clock | An external RTC would remove the start-time dependence on power-on and the rollover limit |
 | Custom printed circuit board | Only the parts needed (microcontroller, temperature and proximity sensors, power regulation) on a board shaped for the splint: smaller, lower current, and better sensor placement against the skin. Needs hardware design and validation |
-
-# Appendix A — Firmware robustness
-
-**Status:** Explained in §4.1 and §4.4; scheduled as §1.2 items 1 and 6. Not yet implemented.
-
-## A.1 Start the recording at Initialize
-
-Today the logger powers down at Initialize and starts counting time at the *next* power-on, so the start time is only right if it is powered on at the entered minute. Two ways to remove this:
-
-- **Start at Initialize, from the computer's clock.** The app sends "now" and the logger starts collecting immediately (no power-down). The start time is then exact, but the scheduled start goes away.
-- **Keep the scheduled start, but count from Initialize.** The logger stays on in low power after Initialize and starts collecting when the entered start time arrives. Also exact, at the cost of a little battery between Initialize and the start. This keeps today's workflow.
-
-## A.2 Idle vs. collection by USB presence (optional)
-
-Choose the mode at power-up by whether USB power is present (the nRF52840 reports this), instead of toggling on every power-up:
-
-- USB connected → idle, answer the app.
-- No USB → if initialized, start or **resume** collection, appending after the last record.
-
-This makes a reset during a deployment cost only a gap instead of the rest of the recording, and the logger no longer needs a power-cycle before download. Resuming needs the elapsed time to continue across the reset, e.g. by storing a reset counter and leaving a marker row in the data.
-
-## A.3 Timing and storage
-
-- Wrap-safe sleep: `if ((int32_t)(nextWakeTime - currentTime) > 0)`. Test across the wrap with a temporary offset of about 2³² − 10 min added to `millis()` in the logging path.
-- Stop at `MAX_DATA_ENTRIES` in `saveTemperatureReading`, or erase all the pages that may be written.
-
-# Appendix B — Ground truth and re-tuning the detector
-
-**Status:** Needed before wear times are reported as results; scheduled as §1.2 item 3.
-
-## B.1 Collecting ground truth
-
-- **Wear diary:** the participant (or staff, in a supervised session) records on/off times. Cheap, but coarse and subject to the same recall bias the logger is meant to avoid.
-- **Supervised sessions:** scripted on/off periods in the lab, including long continuous wear and confounders (warm room, splint left on a warm surface, covered but not worn).
-- **Reference sensor:** a second, independent sensor (e.g. a commercial temperature button logger on the skin side) for a few deployments.
-
-## B.2 What to check
-
-- Per-event agreement (onset/offset within ±1 sample) and per-day wear minutes.
-- **Long wear:** whether overnight wear is split or cut short (§5.1). Possible fixes: a longer baseline window, freezing the baseline while an event is in progress, or requiring two consecutive cooling samples before ending an event.
-- False positives in warm environments, and false negatives with a loose splint.

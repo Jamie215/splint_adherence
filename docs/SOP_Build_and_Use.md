@@ -213,7 +213,7 @@ All times are Eastern time, with daylight-saving changes handled. The screenshot
 
 ![Figure 11. Wear periods by hour of day (simulated data).](images/app_analysis_hourly.png){width=100%}
 
-> **Treat the detected wear times as estimates.** The detection thresholds were tuned on a small amount of data and have not been checked against a record of when the splint was really worn. Long continuous wear (e.g. overnight) may be split or cut short (Project Handover, §5.1). Look at the traces, not only the totals.
+> **Treat the detected wear times as estimates.** The detection thresholds were tuned on a small amount of data and have not been checked against a record of when the splint was really worn. Long continuous wear (e.g. overnight) may be split or cut short (Project Handover, §5.1). Look at the traces, not only the totals. Appendix C describes how to re-tune the detection.
 
 The page also opens older files: files without a proximity column (treated as covered throughout) and files downloaded before app v1.2.0 (timestamps converted from UTC to Eastern automatically).
 
@@ -320,3 +320,45 @@ The Windows and macOS builds are made automatically by GitHub Actions when a ver
 5. To test a build without releasing: **Actions → Build and Release → Run workflow**; the zips appear as downloads on the run's page.
 
 Firmware changes (`collect_temperature.ino`) are not part of the app release: every logger must be re-flashed (§4.2), after downloading its data.
+
+# Appendix C. Tuning the wear-detection parameters (for analysts and developers)
+
+The rules that turn temperature and proximity into wear events were set by inspecting a small number of recordings (Project Handover, §5). Re-tune them once there are recordings with a known record of actual wear ("ground truth"). The parameters are constants in the code (`pages/analysis_helper.py`) with no setting in the app, so a change needs the Python version (Appendix A) and a new app release (Appendix B).
+
+## C.1 Collect ground truth
+
+- **Wear diary:** the participant (or staff, in a supervised session) records on/off times. Cheap, but coarse and subject to recall bias.
+- **Supervised sessions:** scripted on/off periods in the lab, including long continuous wear and confounders (warm room, splint left on a warm surface, sensor covered but splint not worn).
+- **Reference sensor:** a second, independent sensor on the skin side (e.g. a commercial temperature button logger) for a few deployments.
+
+## C.2 What to check
+
+- Agreement per event (start and end within one 5-minute reading) and per day (total wear minutes).
+- **Long wear:** whether overnight wear is split or cut short. After about an hour of continuous wear the baseline catches up with skin temperature, and a single 0.4 °C dip can end the event. Possible fixes: a longer baseline window, freezing the baseline while an event is in progress, or requiring two consecutive cooling readings before ending an event.
+- False wear in warm environments, and missed wear with a loose splint.
+
+## C.3 Parameters
+
+| Parameter | Where | Value | Raising it will… |
+|------------|---------------|------|-------------------|
+| `ONSET_DELTA` | `detect_onsets_offsets` | 3.0 °C | require more heat above room temperature to start an event (fewer false events; gentle onsets missed) |
+| `ONSET_GRAD` | `detect_onsets_offsets` | 0.8 °C/reading | require a sharper jump to start an event |
+| `OFFSET_GRAD` | `detect_onsets_offsets` | −0.4 °C/reading | (less negative) end events on gentler cooling |
+| `OFFSET_DELTA` | `detect_onsets_offsets` | 1.5 °C | end events while still further above room temperature |
+| `PEAK_DROP_FACTOR` | `detect_onsets_offsets` | 0.8 | end events after a smaller drop from the peak |
+| Baseline window | `detect_onsets_offsets` | ~120 min | give a steadier room-temperature estimate, but slower to follow room changes |
+| Trend lag | `detect_onsets_offsets` | ~15 min | smooth the "is it warming up" check more |
+| Minimum length | `detect_onsets_offsets` | 2 readings | drop more short events |
+| Floor window | `dedrift_proximity` | ~1 day | follow proximity drift more slowly |
+| Floor quantile | `dedrift_proximity` | 0.10 | raise the proximity floor estimate |
+| `k` | `dedrift_proximity` | 4.0 | allow more noise and still call the sensor covered |
+| `min_excursion` | `dedrift_proximity` | 5.0 | raise the minimum threshold for "not covered" |
+
+## C.4 Procedure
+
+1. Change one parameter at a time in `pages/analysis_helper.py`.
+2. Run `pytest`; all tests should still pass.
+3. Start the app from Python (`python app.py`) and open each labelled recording on the Data Analysis page. Compare the detected events and daily totals with the ground truth.
+4. When the results improve, add each labelled recording to `tests/` as a regression case, so later changes can't silently undo the improvement.
+5. Record the new values in `HANDOFF.md` §4.
+6. Release a new app version (Appendix B). Older downloads can simply be re-opened in the new version, since the raw readings are unchanged.
