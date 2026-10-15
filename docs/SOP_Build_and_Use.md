@@ -43,7 +43,7 @@ What this means in practice:
 - **Any** reset or power interruption during a deployment (a loose battery, a knock on the reset button) ends the recording. The logger goes to idle and does not resume logging.
 - Initializing (state 4 → 2) **erases the previous recording.** Always download first.
 
-> **Safety and use limits.** This is a research prototype worn against the skin. **\[TODO\]**: battery type and its safety precautions, the enclosure's protection against moisture and sweat, skin-contact checks and how often to inspect the skin, and any ethics-approval conditions on use.
+> **Safety and use limits.** This is a research prototype worn against the skin. **\[TODO\]**: battery type and its safety precautions, the enclosure's protection against moisture and sweat, and skin-contact checks and how often to inspect the skin. Ethics approval has not yet been obtained; it is required before deployment with participants (Project Handover, §1.2).
 
 # 2. Materials
 
@@ -240,7 +240,8 @@ Timestamp,Temperature,ProximityVal
 
 - Keep a **deployment log**: device label, participant ID, firmware/library versions, start time entered, actual power-on time, actual power-cycle (end) time, file name, and notes (device knocked, battery changed, splint removed for long periods, skin issues).
 - Keep the original download untouched; save any corrected copy (`_recovered.csv`) alongside it.
-- **\[TODO\]**: where study data are stored and who can access them (participant data).
+- Use a study code, not a name, as the participant ID: it is stored on the logger, in the file and often in the file name.
+- **\[TODO\]**: where study data are stored and who can access them (participant data). No policy exists yet; see Project Handover §1.2 item 4.
 
 # 11. Troubleshooting
 

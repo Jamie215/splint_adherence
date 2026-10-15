@@ -9,7 +9,7 @@ subtitle: "State at transition, design decisions and their rationale, and direct
 
 This is the handover record for the project *Measuring Temperature and Muscle Contraction in Custom Orthotic Devices*, specifically its splint adherence logger: a temperature and proximity logger embedded in a thermoplastic splint, and the desktop app that configures it and estimates wear time from its recordings (May 2024 – October 2026). It is composed of the following:
 
-- **Handover summary (§1):** where the project stands, what has been tested, all next steps in one place, and who to contact. Read this first.
+- **Handover summary (§1):** where the project stands, what has been tested, all next steps (including ethics and data governance) in one place, and who to contact. Read this first.
 - **Problem and goals (§2):** what the system is for.
 - **Design decisions (§3–§7):** what was decided, why, and which alternatives were considered.
 - **Directions to explore (§8):** larger changes worth considering later.
@@ -29,7 +29,7 @@ The muscle contraction variant of the project work will not be discussed as it w
 
 # 1. State at transition (October 2026)
 
-**Summary.** The system works end to end: a logger can be set up with the app, worn in the splint for up to about a month, and downloaded, and the app turns the recording into daily wear time and an hour-by-hour picture of when the splint was worn. Two loggers have been built. Wear times are estimates in 5-minute steps (wear shorter than about 10 minutes is not counted), and the detection has not yet been fully validated against a record of actual wear. Before a larger study, the known firmware issues should be fixed, battery life measured, and wear detection validated (§1.2).
+**Summary.** The system works end to end: a logger can be set up with the app, worn in the splint for up to about a month, and downloaded, and the app turns the recording into daily wear time and an hour-by-hour picture of when the splint was worn. Two loggers have been built. Wear times are estimates in 5-minute steps (wear shorter than about 10 minutes is not counted), and the detection has not yet been fully validated against a record of actual wear. Before a study with participants, ethics approval and a data-governance plan are needed, the known firmware issues should be fixed, battery life measured, and wear detection validated (§1.2).
 
 ## 1.1 Current state
 
@@ -46,9 +46,11 @@ All remaining work, in recommended order.
 |----------|----------|------------------------------|-----------|
 | 1. Firmware fixes (timing, storage, start time) | Predicted from code; not bench-tested | *Why:* recordings longer than about 7 weeks may be corrupted, and timestamps are only right if the logger is powered on at the entered start time. First confirm the storage issue: initialize a logger with a 1-second interval (temporary change to `WAKEUP_INTERVAL_SECONDS` in `arduino.py`) and leave it for 5 hours; the download should stop at exactly 15 000 rows. Then fix wrap-safe sleep and the storage limit (small, low risk), then start data collection at Initialize, in one firmware release. Bench-test for a full month, re-flash loggers after downloading their data, and update the SOP. | §4.4; `HANDOFF.md` §8 |
 | 2. Battery life | Not measured with the latest firmware; resting current below ~750 µA | *Why:* sets how long a deployment can safely run. One logger on the bench for a full month or until the battery dies, which is the duration of expected battery life. | §4.3 |
-| 3. Wear-detection accuracy | Not fully validated | *Why:* needed before wear times are reported as study results. Collect ground truth on a few deployments (wear diary or reference sensor), check overnight wear especially, and re-tune the thresholds accordingly. | §5; SOP Appendix C |
-| 4. Clock drift | Not measured; expected negligible | *Why:* confirms the timestamps stay accurate over a deployment, at no extra cost. At the end of each deployment, note the real time of the power-cycle and compare it with the last timestamp in the file. They should agree within one interval (5 minutes); a larger gap shows drift or a late power-on. | §4.4 |
-| 5. Mode by USB presence (optional) | Not started | *Why:* today a reset or power loss during a deployment ends the recording. Choose idle or data collection at power-up by whether USB is connected, so a reset costs only a gap. | §4.1; `HANDOFF.md` §8 |
+| 3. Ethics approval | Not started | *Why:* required before any deployment with participants, including the ground-truth deployments in item 5. Prepare the submission covering the device (worn against the skin, battery-powered, research prototype), what is recorded, and how data is handled (item 4). | §7.1; SOP §1 |
+| 4. Data-governance plan | Not started; no policy exists | *Why:* the app leaves data handling to the user (§7.1). Decide where recordings and deployment logs are stored, who can access them, the participant ID scheme, how long data is kept, and how it is moved off the study computer; then update the SOP (§10). | §7.1; SOP §10 |
+| 5. Wear-detection accuracy | Not fully validated | *Why:* needed before wear times are reported as study results. Collect ground truth on a few deployments (wear diary or reference sensor), check overnight wear especially, and re-tune the thresholds accordingly. | §5; SOP Appendix C |
+| 6. Clock drift | Not measured; expected negligible | *Why:* confirms the timestamps stay accurate over a deployment, at no extra cost. At the end of each deployment, note the real time of the power-cycle and compare it with the last timestamp in the file. They should agree within one interval (5 minutes); a larger gap shows drift or a late power-on. | §4.4 |
+| 7. Mode by USB presence (optional) | Not started | *Why:* today a reset or power loss during a deployment ends the recording. Choose idle or data collection at power-up by whether USB is connected, so a reset costs only a gap. | §4.1; `HANDOFF.md` §8 |
 
 ## 1.3 Documents
 
@@ -126,7 +128,7 @@ The logger records on its own during the deployment. It only talks to a computer
 
 - **Design Decision:** The logger keeps a mode flag in flash and changes it on every power-up: an initialized logger with no data starts data collection; a logger collecting data becomes idle (Figure 1).
 - **Why:** During data collection USB is switched off to save power, so the computer can't send a "stop" command. Power-cycling is the only control available without extra buttons.
-- **Limitation:** The logger can't be seen by the app during data collection; power-cycle it first. Any reset or power loss during data collection also counts as a power-up, so the recording ends there: the data so far is kept, but nothing more is recorded. An alternative is §1.2 item 5.
+- **Limitation:** The logger can't be seen by the app during data collection; power-cycle it first. Any reset or power loss during data collection also counts as a power-up, so the recording ends there: the data so far is kept, but nothing more is recorded. An alternative is §1.2 item 7.
 
 ## 4.2 Settings stored twice (A/B), with a checksum
 
@@ -148,7 +150,7 @@ The logger records on its own during the deployment. It only talks to a computer
 - **Limitations:**
   - *Start time.* Elapsed time counts from the power-on that starts data collection, while the start time is the one typed into the app at Initialize. Any gap between the two shifts every timestamp by that amount, and nothing in the file shows it. Fix: §1.2 item 1.
   - *Rollover.* `millis()` is 32-bit and wraps at about 49.7 days, and the sleep check `nextWakeTime > currentTime` is not wrap-safe: expect a burst of readings, then a long gap. The stored elapsed times stay correct. Fix: §1.2 item 1; until then, keep deployments to about a month.
-  - *Clock accuracy.* Timestamps rely on the board's oscillator, with no correction. With the board's crystal (tens of ppm) the error is about 1–2 minutes a month, well under one interval; while this is not measured directly, it is a commonly known limitation of using onboard crystal (check: §1.2 item 4).
+  - *Clock accuracy.* Timestamps rely on the board's oscillator, with no correction. With the board's crystal (tens of ppm) the error is about 1–2 minutes a month, well under one interval; while this is not measured directly, it is a commonly known limitation of using onboard crystal (check: §1.2 item 6).
 
 ## 4.5 Robust proximity reads
 
@@ -165,7 +167,7 @@ Full parameter table: `HANDOFF.md` §4. How to re-tune: SOP Appendix C.
 - **Why:** Room temperature changes over the day, so a fixed threshold would fail; the rolling minimum follows it. The 15-minute trend check stops cooling slopes from triggering false onsets.
 - **Limitations:**
   - *Short wear.* Events shorter than 2 readings are dropped, so wear periods under about 10 minutes are not counted, and every start and end time is accurate to one 5-minute step.
-  - *Long wear.* After about an hour of continuous wear the 2-hour window holds only "worn" samples, so the baseline rises to skin temperature and delta falls to about 0. From then on, a single drop of 0.4 °C between samples ends the event, and it cannot restart (that needs delta ≥ 3 °C or a jump ≥ 0.8 °C). On synthetic 8-hour overnight wear, noise with a standard deviation of 0.15 °C split the nights into short pieces; with 0.04 °C they were detected whole. Possible fixes are in SOP Appendix C; validation is §1.2 item 3.
+  - *Long wear.* After about an hour of continuous wear the 2-hour window holds only "worn" samples, so the baseline rises to skin temperature and delta falls to about 0. From then on, a single drop of 0.4 °C between samples ends the event, and it cannot restart (that needs delta ≥ 3 °C or a jump ≥ 0.8 °C). On synthetic 8-hour overnight wear, noise with a standard deviation of 0.15 °C split the nights into short pieces; with 0.04 °C they were detected whole. Possible fixes are in SOP Appendix C; validation is §1.2 item 5.
 
 ## 5.2 Proximity as a gate
 
@@ -195,6 +197,17 @@ All thresholds were set by inspecting a small number of recordings. A finer tuni
 - **Works offline.** All required assets are packaged, allowing the application to be usable in offline conditions as well.
 - **Automated releases.** GitHub Actions builds stand-alone Windows and macOS programs on each `v*` tag, with Python included, so staff need no Python (SOP Appendix B).
 - **Participant IDs.** Letters, digits, `-` and `_`, up to 15 characters: they go into the CSV header and often into file names, where commas or spaces would cause trouble.
+
+## 7.1 Data handling (app behaviour)
+
+This describes what the software does with data. It is not a data-handling policy; none exists yet (§1.2 item 4).
+
+- **Where data goes.** Everything stays on the study computer. The app runs a local server that only that computer can reach (`127.0.0.1`), and it sends nothing over the internet.
+- **On the logger.** Readings and the participant ID are stored unencrypted in the logger's flash memory, and stay there until the logger is initialized again (§4.1). Anyone with the app and the logger can download them.
+- **Downloads.** The browser saves each download as a plain CSV file, normally in the Downloads folder. The file holds the participant ID, the start time and every reading. The app keeps no copy.
+- **Analysis page.** An uploaded file is processed in memory and is not saved by the app.
+- **Participant ID.** It is stored on the logger, in the CSV header and often in file names, so it should be a study code, not a name.
+- **Logs.** The app's messages go to its console window only; it writes no log files.
 
 # 8. Directions to explore
 
