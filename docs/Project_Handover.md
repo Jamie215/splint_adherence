@@ -29,7 +29,7 @@ The muscle contraction variant of the project work will not be discussed as it w
 
 # 1. State at transition (October 2026)
 
-**Summary.** The system works end to end: a logger can be set up with the app, worn in the splint for up to about a month, and downloaded, and the app turns the recording into daily wear time and an hour-by-hour picture of when the splint was worn. Two loggers have been built. Wear times are estimates in 5-minute steps (wear shorter than about 10 minutes is not counted), and the detection has not yet been fully validated against a record of actual wear. Before a study with participants, ethics approval and a data-governance plan are needed, the known firmware issues should be fixed, battery life measured, and wear detection validated (§1.2).
+**Summary.** The system works end to end: a logger can be set up with the app, worn in the splint for up to about a month, and downloaded, and the app turns the recording into daily wear time and an hour-by-hour picture of when the splint was worn. Two loggers have been built. They take a reading every 5 minutes, and the app estimates wear time from those readings. The detection has not yet been fully validated against a record of actual wear. Before a study with participants, ethics approval and a data-governance plan are needed, the known firmware issues should be fixed, battery life measured, and wear detection validated (§1.2).
 
 ## 1.1 Current state
 
@@ -45,12 +45,11 @@ All remaining work, in recommended order.
 | Item | Status | What to do | Details |
 |----------|----------|------------------------------|-----------|
 | 1. Firmware fixes (timing, storage, start time) | Predicted from code; not bench-tested | *Why:* recordings longer than about 7 weeks may be corrupted, and timestamps are only right if the logger is powered on at the entered start time. First confirm the storage issue: initialize a logger with a 1-second interval (temporary change to `WAKEUP_INTERVAL_SECONDS` in `arduino.py`) and leave it for 5 hours; the download should stop at exactly 15 000 rows. Then fix wrap-safe sleep and the storage limit (small, low risk), then start data collection at Initialize, in one firmware release. Bench-test for a full month, re-flash loggers after downloading their data, and update the SOP. | §4.4; `HANDOFF.md` §8 |
-| 2. Battery life | Not measured with the latest firmware; resting current below ~750 µA | *Why:* sets how long a deployment can safely run. One logger on the bench for a full month or until the battery dies, which is the duration of expected battery life. | §4.3 |
+| 2. Battery life | Not measured with the latest firmware; resting current below ~750 µA | *Why:* sets how long a deployment can safely run. A CR2450 (~620 mAh) at ~750 µA gives a rough upper bound of about 34 days, consistent with the ~36-day recording; until measured, fit a new cell for every deployment. One logger on the bench for a full month or until the battery dies, which is the duration of expected battery life. | §3.2; §4.3 |
 | 3. Ethics approval | Not started | *Why:* required before any deployment with participants, including the ground-truth deployments in item 5. Prepare the submission covering the device (worn against the skin, battery-powered, research prototype), what is recorded, and how data is handled (item 4). | §7.1; SOP §1 |
 | 4. Data-governance plan | Not started; no policy exists | *Why:* the app leaves data handling to the user (§7.1). Decide where recordings and deployment logs are stored, who can access them, the participant ID scheme, how long data is kept, and how it is moved off the study computer; then update the SOP (§10). | §7.1; SOP §10 |
 | 5. Wear-detection accuracy | Not fully validated | *Why:* needed before wear times are reported as study results. Collect ground truth on a few deployments (wear diary or reference sensor), check overnight wear especially, and re-tune the thresholds accordingly. | §5; SOP Appendix C |
 | 6. Clock drift | Not measured; expected negligible | *Why:* confirms the timestamps stay accurate over a deployment, at no extra cost. At the end of each deployment, note the real time of the power-cycle and compare it with the last timestamp in the file. They should agree within one interval (5 minutes); a larger gap shows drift or a late power-on. | §4.4 |
-| 7. Mode by USB presence (optional) | Not started | *Why:* today a reset or power loss during a deployment ends the recording. Choose idle or data collection at power-up by whether USB is connected, so a reset costs only a gap. | §4.1; `HANDOFF.md` §8 |
 
 ## 1.3 Documents
 
@@ -121,6 +120,8 @@ The logger records on its own during the deployment. It only talks to a computer
 - **Design Decision:** Arduino Nano 33 BLE Sense, using its built-in HS300x temperature and APDS9960 proximity sensors.
 - **Why:** Both sensors are already on the board, so there is no extra wiring. The nRF52840 has enough flash for a month of readings and can be put into a low-power state. The board also has Bluetooth available if pursuing a wireless version in future.
 - **Trade-off:** The board is larger and draws more current than a custom designed printed circuit board.
+- **Power:** A CR2450 coin cell on the 3.3 V pin, with the 3.3 V jumper on the back of the board cut so the board's regulator and USB circuitry draw no power. As a result, USB alone cannot power the logger: the cell must be connected whenever it is used with the app, and flashing new firmware needs the jumper bridged, then cut again (SOP §4.2). This is why one logger currently needs its 3.3 V trace reconnected before its firmware can be updated (§1.1).
+- **Case and mounting:** A 3D-printed case (`splint_adherece_case.stl` in the repository) holds the board with the sensors facing the skin, behind skin-friendly tape. It is moulded into each participant's custom splint and secured through the thermoplastic with a Chicago screw, so the case and logger can be moved to the next participant's splint.
 
 # 4. Firmware
 
@@ -128,7 +129,7 @@ The logger records on its own during the deployment. It only talks to a computer
 
 - **Design Decision:** The logger keeps a mode flag in flash and changes it on every power-up: an initialized logger with no data starts data collection; a logger collecting data becomes idle (Figure 1).
 - **Why:** During data collection USB is switched off to save power, so the computer can't send a "stop" command. Power-cycling is the only control available without extra buttons.
-- **Limitation:** The logger can't be seen by the app during data collection; power-cycle it first. Any reset or power loss during data collection also counts as a power-up, so the recording ends there: the data so far is kept, but nothing more is recorded. An alternative is §1.2 item 7.
+- **Limitation:** The logger can't be seen by the app during data collection; power-cycle it first. Any reset or power loss during data collection also counts as a power-up, so the recording ends there: the data so far is kept, but nothing more is recorded. Secure the battery and record any interruption in the deployment log.
 
 ## 4.2 Settings stored twice (A/B), with a checksum
 

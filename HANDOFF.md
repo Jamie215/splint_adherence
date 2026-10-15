@@ -292,10 +292,6 @@ unstyled on offline machines. These files now ship under `assets/vendor/`:
    - **counting from Initialize:** the device stays in low power after
      Initialize and starts logging when the entered start time arrives (keeps
      today's workflow, at a small battery cost).
-3. Optional: choose the mode by USB presence (item 8). USB connected → idle;
-   no USB and initialized → start or resume logging, appending after the last
-   record. A reset then costs only a gap. Resuming needs the elapsed time to
-   continue across the reset (e.g. a stored reset counter and a marker row).
 
 ## 9. Build, test and release runbook
 
