@@ -24,22 +24,23 @@ Key terms used in this SOP:
 
 ## 1.1 The logger's four states
 
-The most important thing to understand before using the logger: every time it is powered on, it decides what to do from what happened last time (Figure 1).
+What the logger does when it is powered on depends on its current state (Figure 1).
 
-![Figure 1. The logger's states and what triggers each change. The app can connect only in states 1 and 4; in state 2 the board is powered down. Every timestamp is counted from the power-on that starts data collection, so that must happen at the start time entered in the app.](images/device_lifecycle.png){width=100%}
+![Figure 1. The logger's states and what triggers each change.](images/device_lifecycle.png){width=100%}
 
-| State | Lights | Can the app see it? | How it gets there |
+| State | Lights | Visible to the app? | Reached by |
 |--------|--------|--------|-----------|
-| 1. Idle; not initialized | Green on | Yes | Freshly flashed board |
-| 2. Idle; initialized | Off (powered down) | No | Initialize in the app (from state 1 or 4) |
-| 3. Data collection | Off (briefly on at power-on) | No | Powered on after Initialize |
-| 4. Idle; collection complete | Green on | Yes | Power-cycle, or any reset, during collection |
+| 1. Idle; not initialized | Green on | Yes | Flashing the firmware |
+| 2. Idle; initialized | Off (powered down) | No | Initialize in the app, from state 1 or 4 |
+| 3. Data collection | Brief flash at power-on, then off | No | Powering on after Initialize |
+| 4. Idle; collection complete | Green on | Yes | A power-cycle or any reset during data collection |
 
-What this means in practice:
+Keep in mind:
 
-- A logger that is collecting data **cannot be found by the app**. Power-cycle it once to reach state 4, then connect.
-- **Any reset or power interruption** during a deployment (a loose battery, a knock on the reset button) ends the recording. The logger goes to idle and does not resume data collection.
-- Initializing (state 4 → 2) **erases the previous recording**. Ensure that you have downloaded the existing data first.
+- The app cannot see a logger that is collecting data. Power-cycle it first to reach state 4.
+- **Any reset or power loss** during a deployment, such as a loose coin cell, ends the recording for good.
+- Initializing **erases the previous recording**, so download it first (§7).
+- Timestamps count from the power-on that starts data collection, so power on at the start time entered in the app (§5).
 
 > **Safety and use limits.** This is a research prototype worn against the skin. It runs on a CR2450 coin cell: keep spare and used cells away from children, as a swallowed coin cell can cause serious internal injury. The skin-contact face of the case is covered with skin-friendly tape, renewed for every deployment. Check the skin under the case at each visit.
 
@@ -160,7 +161,7 @@ To update the app later, download the newer release and replace the old folder.
 - [ ] The 3.3 V jumper on the back of the board is cut (§3.2).
 - [ ] The skin-friendly tape on the case has been renewed.
 - [ ] With the coin cell connected, the logger is idle (green light on). If not, power-cycle it once.
-- [ ] A USB data cable is at hand, and the Arduino Serial Monitor (or anything else using the logger's port) is closed.
+- [ ] A micro-USB data cable is at hand, and the Arduino Serial Monitor (or anything else using the logger's port) is closed.
 - [ ] The participant ID and the planned start date and time are decided.
 - [ ] The deployment is planned to last **no longer than about one month** (§6).
 
