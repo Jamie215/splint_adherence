@@ -29,7 +29,7 @@ The muscle contraction variant of the project work will not be discussed as it w
 
 # 1. State at transition (October 2026)
 
-**Summary.** The system works end to end: a logger can be set up with the app, worn in the splint for up to about a month, and downloaded, and the app turns the recording into daily wear time and an hour-by-hour picture of when the splint was worn. Two loggers have been built. They take a reading every 5 minutes, and the app estimates wear time from those readings. The detection has not yet been fully validated against a record of actual wear. Before a study with participants, ethics approval and a data-governance plan are needed, the known firmware issues should be fixed, battery life measured, and wear detection validated (§1.2).
+**Summary.** The system works end to end: a logger can be set up with the app, worn in the splint for up to about a month, and downloaded, and the app turns the recording into daily wear time and an hour-by-hour picture of when the splint was worn. Two loggers have been built. They take a reading every 5 minutes, and the app estimates wear time from those readings. The detection has not yet been fully validated against a record of actual wear, and the app's average daily wear time currently leaves out days with no detected wear, so it overstates adherence (§5.5). Before a study with participants, ethics approval and a data-governance plan are needed, the known firmware issues should be fixed, battery life measured, and wear detection validated (§1.2).
 
 ## 1.1 Current state
 
@@ -44,12 +44,13 @@ All remaining work, in recommended order.
 
 | Item | Status | What to do | Details |
 |----------|----------|------------------------------|-----------|
-| 1. Firmware fixes (timing, storage, start time) | Predicted from code; not bench-tested | *Why:* recordings longer than about 7 weeks may be corrupted, and timestamps are only right if the logger is powered on at the entered start time. First confirm the storage issue: initialize a logger with a 1-second interval (temporary change to `WAKEUP_INTERVAL_SECONDS` in `arduino.py`) and leave it for 5 hours; the download should stop at exactly 15 000 rows. Then fix wrap-safe sleep and the storage limit (small, low risk), then start data collection at Initialize, in one firmware release. Bench-test for a full month, re-flash loggers after downloading their data, and update the SOP. | §4.4; `HANDOFF.md` §8 |
-| 2. Battery life | Not measured with the latest firmware; resting current below ~750 µA | *Why:* sets how long a deployment can safely run. A CR2450 (~620 mAh) at ~750 µA gives a rough upper bound of about 34 days, consistent with the ~36-day recording; until measured, fit a new cell for every deployment. One logger on the bench for a full month or until the battery dies, which is the duration of expected battery life. | §3.2; §4.3 |
-| 3. Ethics approval | Not started | *Why:* required before any deployment with participants, including the ground-truth deployments in item 5. Prepare the submission covering the device (worn against the skin, battery-powered, research prototype), what is recorded, and how data is handled (item 4). | §7.1; SOP §1 |
-| 4. Data-governance plan | Not started; no policy exists | *Why:* the app leaves data handling to the user (§7.1). Decide where recordings and deployment logs are stored, who can access them, the participant ID scheme, how long data is kept, and how it is moved off the study computer; then update the SOP (§10). | §7.1; SOP §10 |
-| 5. Wear-detection accuracy | Not fully validated | *Why:* needed before wear times are reported as study results. Collect ground truth on a few deployments (wear diary or reference sensor), check overnight wear especially, and re-tune the thresholds accordingly. | §5; SOP Appendix C |
+| 1. Firmware fixes (timing, storage, start time) | Predicted from code; not bench-tested | *Why:* recordings longer than about 7 weeks may be corrupted, and timestamps are only right if the logger is powered on at the entered start time. First confirm the storage issue: initialize a logger with a 1-second interval (temporary change to `WAKEUP_INTERVAL_SECONDS` in `arduino.py`, running the app from Python; SOP Appendix A) and leave it for 5 hours; the download should stop at exactly 15 000 rows. Then fix wrap-safe sleep and the storage limit (small, low risk), then start data collection at Initialize, in one firmware release. Bench-test for a full month, re-flash loggers after downloading their data, and update the SOP. | §4.4; `HANDOFF.md` §8 |
+| 2. Battery life | Not measured with the latest firmware; resting current below ~750 µA | *Why:* sets how long a deployment can safely run. A CR2450 (~620 mAh) at ~750 µA gives a rough upper bound of about 34 days, consistent with the ~36-day recording; until measured, fit a new cell for every deployment. Leave one logger on the bench for a full month, or until the battery dies, to measure battery life. | §3.2; §4.3 |
+| 3. Ethics approval | Not started | *Why:* required before any deployment with participants, including the ground-truth deployments in item 5. Prepare the study protocol, including participant wear instructions and how often to check the skin, and the submission covering the device (worn against the skin, battery-powered, research prototype), what is recorded, and how data is handled (item 4). | §7.1; SOP §1 |
+| 4. Data-governance plan | Not started; no policy exists | *Why:* the app leaves data handling to the user (§7.1). Decide where recordings and deployment logs are stored, who can access them, the participant ID scheme, how long data is kept, and how it is moved off the study computer; then update the SOP (§9). | §7.1; SOP §9 |
+| 5. Wear-detection accuracy | Not fully validated | *Why:* needed before wear times are reported as study results. Collect ground truth on a few deployments (e.g. a wear diary or supervised sessions), check overnight wear especially, and re-tune the thresholds accordingly. | §5; SOP Appendix C |
 | 6. Clock drift | Not measured; expected negligible | *Why:* confirms the timestamps stay accurate over a deployment. Run the bench test in SOP Appendix D once; the difference should be under one interval (5 minutes). | §4.4; SOP Appendix D |
+| 7. Daily average in the app | Known issue | *Why:* "Average Wear Time Per Day" leaves out days with no detected wear, so it overstates adherence; the partial first and last days count as full days. Average over every calendar day of the recording, and report the partial first and last days separately. Until then, divide Total Wear Time by the number of days in the recording (SOP §8). | §5.5; SOP §8 |
 
 ## 1.3 Documents
 
@@ -74,7 +75,7 @@ All remaining work, in recommended order.
 | App (GUI) | The desktop application used to set up loggers, download recordings and view the analysis |
 | Deployment | One period during which a participant wears the splint with a logger collecting data |
 | Wear event | A period the app judges the splint was worn, from its start (onset) to its end (offset) |
-| Ground truth | An independent record of when the splint was actually worn (e.g. a diary or a second sensor), used to check the detection |
+| Ground truth | An independent record of when the splint was actually worn (e.g. a wear diary or a supervised session), used to check the detection |
 | HS300x | The board's temperature (and humidity) sensor; only temperature is used |
 | APDS9960 | The board's proximity sensor. Reads 0–255; a low value means the splint is worn |
 | Firmware | The program running on the logger (an Arduino "sketch"). Changing it means re-flashing every logger |
@@ -97,7 +98,7 @@ The goal is to measure **how consistently a patient wears a prescribed splint** 
 | Objective wear time | Estimate wear periods from sensor data, not patient diaries |
 | Long, unattended recording | Record for weeks with no interaction: no charging, no syncing, no app on the patient's phone |
 | Simple workflow | One app to set up a logger, download it, and see the results |
-| Low cost, off-the-shelf | Use a standard board with built-in sensors, so loggers are easy to build and replace |
+| Low cost, off-the-shelf | Use a standard board with built-in sensors, so loggers are easy to build and replace. Originally estimated at about $60 per logger, mostly the Arduino Nano 33 BLE Sense Rev2, whose price has been fluctuating and recently rising |
 
 **Scope:** wear detection from body heat and sensor covering, at 5-minute resolution, for deployments of up to about a month.
 
@@ -120,8 +121,8 @@ The logger records on its own during the deployment. It only talks to a computer
 - **Design Decision:** Arduino Nano 33 BLE Sense, using its built-in HS300x temperature and APDS9960 proximity sensors.
 - **Why:** Both sensors are already on the board, so there is no extra wiring. The nRF52840 has enough flash for a month of readings and can be put into a low-power state. The board also has Bluetooth available if pursuing a wireless version in future.
 - **Trade-off:** The board is larger and draws more current than a custom designed printed circuit board.
-- **Power:** A CR2450 coin cell on the 3.3 V pin, with the 3.3 V jumper on the back of the board cut so the board's regulator and USB circuitry draw no power. As a result, USB alone cannot power the logger: the cell must be connected whenever it is used with the app, and flashing new firmware needs the jumper bridged, then cut again (SOP §4.2). This is why one logger currently needs its 3.3 V trace reconnected before its firmware can be updated (§1.1).
-- **Case and mounting:** A 3D-printed case (`splint_adherece_case.stl` in the repository) holds the board with the sensors facing the skin, behind skin-friendly tape. It is moulded into each participant's custom splint and secured through the thermoplastic with a Chicago screw, so the case and logger can be moved to the next participant's splint.
+- **Power:** A CR2450 coin cell on the 3.3 V pin, with the 3.3 V jumper on the back of the board cut so the board's regulator and USB circuitry draw no power. As a result, USB alone cannot power the logger: the cell must be connected whenever it is used with the app, and flashing new firmware needs the jumper bridged, then cut again (SOP §3.2). This is why one logger currently needs its 3.3 V trace reconnected before its firmware can be updated (§1.1).
+- **Case and mounting:** A 3D-printed case (`splint_adherece_case.stl` in the repository) holds the board with the sensors facing the skin, behind skin-friendly tape. The PI (an orthopedist) moulds the case into each participant's custom splint while moulding the splint itself, and it is secured through the thermoplastic with Chicago screws, so the case and logger can be moved to the next participant's splint.
 
 # 4. Firmware
 
@@ -184,6 +185,10 @@ Full parameter table: `HANDOFF.md` §4. How to re-tune: SOP Appendix C.
 
 All thresholds were set by inspecting a small number of recordings. A finer tuning may be required based on the larger sample data; SOP Appendix C describes how.
 
+## 5.5 Daily summary
+
+- **Limitation:** The app's "Average Wear Time Per Day" is the mean over days with at least one detected wear event. Days with no detected wear are left out, so the average overstates adherence, and the partial first and last days of a recording are counted as full days. Until this is fixed (§1.2 item 7), divide Total Wear Time by the number of days in the recording (SOP §8).
+
 # 6. Time handling
 
 - **Design Decision:** The logger knows only UTC epoch seconds. The app asks for and shows **Eastern time** (America/New_York, daylight-saving aware) everywhere, and writes timestamps with their UTC offset (e.g. `-04:00`).
@@ -194,7 +199,7 @@ All thresholds were set by inspecting a small number of recordings. A finer tuni
 # 7. Desktop application
 
 - **Browser-based interface (Dash + Flask-SocketIO).** Plotly/Dash provide the charts and tables; the app runs a local server on `127.0.0.1:8050` and opens the browser.
-- **Heartbeat shutdown.** The page sends a heartbeat every 5 s. With none for 5 minutes, the server warns the page and exits, so closing the tab doesn't leave a hidden server holding the serial port for data privacy.
+- **Heartbeat shutdown.** The page sends a heartbeat every 5 s. With none for 5 minutes, the server warns the page and exits, so closing the tab doesn't leave a hidden server holding the serial port.
 - **Works offline.** All required assets are packaged, allowing the application to be usable in offline conditions as well.
 - **Automated releases.** GitHub Actions builds stand-alone Windows and macOS programs on each `v*` tag, with Python included, so staff need no Python (SOP Appendix B).
 - **Participant IDs.** Letters, digits, `-` and `_`, up to 15 characters: they go into the CSV header and often into file names, where commas or spaces would cause trouble.

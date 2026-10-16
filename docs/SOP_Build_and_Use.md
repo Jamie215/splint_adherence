@@ -194,7 +194,7 @@ Initializing tells the logger its participant ID and when its recording starts, 
 1. At the start time entered in §5, connect a **new** CR2450 coin cell. Note the actual time in the deployment log.
 2. The lights come on briefly, then go off when the first reading is taken; after that the logger stays dark. (A logger left with its green light on is idle, not collecting data: re-check §5.)
 3. Fit the device into its case and close the lid, as in Figure 6.
-4. Secure the case into the participant's splint with the Chicago screws, with fresh skin-friendly tape on the skin-contact face.
+4. Secure the case into the participant's splint with the Chicago screws, with fresh skin-friendly tape on the skin-contact face. The case's place in the splint is moulded by the PI (an orthopedist) when the participant's splint itself is moulded.
 5. Give the participant their instructions, based on the study protocol (e.g. wearing schedule, keeping the splint away from moisture, and what to do if the device is knocked or comes loose).
 
 > **Note.** Plan deployments for **about one month at most**. The longest full recording tested lasted about 36 days. With the current firmware, the logger's internal timer rolls over at around 49.7 days, and its sampling can get affected. Also, the onboard storage becomes full about after 52 days (15000 readings at one every 5 minutes).
@@ -218,7 +218,7 @@ Initializing tells the logger its participant ID and when its recording starts, 
 6. Open it on the **Data Analysis** page (§8) to check that it looks complete before the logger is initialized again. Alternatively, you can manually inspect the downloaded CSV file.
 
 
-Closing the modal window releases the logger. Power-cycling the logger in idle mode keeps it idle; the recording stays on it until the next Initialize.
+Closing the Download window releases the logger. Power-cycling the logger in idle mode keeps it idle; the recording stays on it until the next Initialize.
 
 ## 7.2 If the start time is missing
 
@@ -250,6 +250,8 @@ All times are Eastern time, with daylight-saving changes handled. The screenshot
 
 > **Treat the detected wear times as estimates.** The detection thresholds were tuned on a small amount of data and have not been checked against a record of when the splint was really worn. Long continuous wear (e.g. overnight) may be split or cut short (Project Handover, §5.1). Look at the traces, not only the totals. Appendix C describes how to re-tune the detection.
 
+> **Average Wear Time Per Day overstates adherence.** It is averaged only over days with at least one detected wear event, so days without wear are left out, and the partial first and last days of a recording count as full days. To estimate adherence, divide **Total Wear Time** by the number of days in the recording instead.
+
 
 # 9. Data handling
 
@@ -272,7 +274,7 @@ Timestamp,Temperature,ProximityVal
 | `Temperature` | °C, from the HS300x sensor |
 | `ProximityVal` | 0–255 from the APDS9960 sensor; low = covered (worn). Its baseline creeps upward over a long deployment; the analysis allows for this. |
 
-- Keep a deployment log: device label, participant ID, firmware/library versions, start time entered, actual power-on time, actual power-cycle (end) time, file name, and notes (device knocked, battery changed, splint removed for long periods, skin issues).
+- Keep a deployment log: device label, participant ID, firmware version, start time entered, actual power-on time, actual power-cycle (end) time, file name, and notes (device knocked, battery changed, splint removed for long periods, skin issues).
 - Keep the original download untouched; if modified (i.e., corrected), save any copy alongside it.
 - Use a study code, not a name, as the participant ID: it is stored on the logger, in the file and often in the file name.
 - The PI and research team will need to plan for data governance and where study data are stored and who can access them (participant data). No policy exists yet; see Project Handover §1.2 item 4.
