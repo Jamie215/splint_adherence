@@ -1,6 +1,6 @@
 ---
 title: "Splint Adherence Logger: How to Build & Use"
-subtitle: "Standard operating procedure (SOP) for building, setting up and deploying the logger, and for downloading and analysing its data"
+subtitle: "Standard operating procedure (SOP) for building, setting up and deploying the logger, and for downloading and analyzing its data"
 ---
 
 *Drafted in October 2026, prepared by Jamie Kim.*
@@ -68,6 +68,7 @@ To assemble the device, you need the following materials and equipment. The asse
 | | Acrylic (plexiglass) sheet cutter | Used to cut the window; available in Rm 1588, Elborn College |
 | | Super glue | Glues the window to the case |
 | | Cotton swab (Q-tip) | Spreads or cleans up excess glue around the window |
+| | EVA foam | Used to fill the gap between the Arduino and coin cell holder when folded; Optional |
 | 2 | Chicago screws | Secure the case through the thermoplastic splint (§6). Depending on how securely the case sits in the moulded splint, the screws may be optional |
 | 1 | Skin-friendly tape | Covers the skin-contact face of the case; renewed every deployment |
 
@@ -106,6 +107,8 @@ To assemble the device, you need the following materials and equipment. The asse
 
    ![Figure 6. With the lid closed, the APDS9960 sensor sits directly under the window (left). Location of the APDS9960 on the board (right; image: Arduino).](images/sop/sensor_window_and_location.jpeg){width=60%}
 
+   If the proximity sensor sits tilted because of the gap between the Arduino and the coin cell holder, place a thin piece of non-conductive EVA foam in the gap so the sensor sits flat under the window.
+
 Once done, label each logger (e.g. with a device number) so recordings can be matched to devices.
 
 # 3. Software setup
@@ -130,7 +133,7 @@ The Arduino IDE is a program used to load the firmware onto the logger.
 
 4. After flashing, the board restarts in state 1 (idle; not initialized): the green light is on.
 5. Optional check: open **Tools → Serial Monitor** (9600 baud). The board prints **Ready for Connection** when it restarts. Type `?` and press Enter: it replies **Hello World!**. Close the Serial Monitor afterwards, because only one program can use the connection at a time.
-6. Disconnect the micro-USB cable, then **cut the 3.3 V jumper trace** on the back of the board (Figure 7). This stops the board's regulator and USB circuitry from drawing power, which keeps the resting current low (below about 750 µA, measured on the bench).
+6. Disconnect the micro-USB cable, then **cut the 3.3 V jumper trace** on the back of the board (Figure 7). This stops the board's regulator and USB circuitry from drawing power, which keeps the resting current low (below about 750 µA).
 
    ![Figure 7. Cut the 3.3 V jumper trace on the underside of the Arduino board.](images/sop/cut_3v3_trace.png){width=30%}
 
@@ -194,11 +197,7 @@ Initializing tells the logger its participant ID and when its recording starts, 
 4. Secure the case into the participant's splint with the Chicago screws, with fresh skin-friendly tape on the skin-contact face.
 5. Give the participant their instructions, based on the study protocol (e.g. wearing schedule, keeping the splint away from moisture, and what to do if the device is knocked or comes loose).
 
-> **Note.** Plan deployments for **about one month at most**. The longest full recording tested lasted about 36 days.
->
-> - At about 49.7 days the logger's internal timer rolls over, and its sampling is expected to misbehave (a burst of readings, then possibly a long gap). This is predicted from the code and has not been bench-tested.
-> - Storage is full after about 52 days (15 000 readings at one every 5 minutes).
-> - Battery life over a full deployment has not been measured. A CR2450 (about 620 mAh) at the measured resting current gives a rough upper bound of about 34 days, which fits the 36-day recording. This is why a new cell is used for every deployment.
+> **Note.** Plan deployments for **about one month at most**. The longest full recording tested lasted about 36 days. With the current firmware, the logger's internal timer rolls over at around 49.7 days, and its sampling can get affected. Also, the onboard storage becomes full about after 52 days (15000 readings at one every 5 minutes).
 
 # 7. Downloading data
 
@@ -210,13 +209,14 @@ Initializing tells the logger its participant ID and when its recording starts, 
    - **No device found**: see §10.
 3. Enter a **File name** (Figure 12). The placeholder shows the naming convention `Subject(UID)_(Quarter).(DeviceIteration)`, e.g. `SA014_Q3.1`. Do not add `.csv`; the app adds it.
 4. Click **Download Data**. A full month takes about a minute; keep the window open until **Download complete** appears (Figure 13).
+
+   ![Figure 12. Download: enter a file name and click Download Data.](images/app_download_form.png){width=55%}
+
+   ![Figure 13. Download complete. The CSV file is saved through the browser.](images/app_download_done.png){width=55%}
+
 5. The file is saved through the browser, normally to your Downloads folder. Move it to the study's data storage.
-6. Open it on the **Data Analysis** page (§8) to check that it looks complete before the logger is initialized again.
-7. Check the last timestamp in the file against the power-cycle time you noted: it should be no more than about 5 minutes earlier. A larger gap means the logger was powered on late (or early) at the start, or its clock drifted; note it in the log.
+6. Open it on the **Data Analysis** page (§8) to check that it looks complete before the logger is initialized again. Alternatively, you can manually inspect the downloaded CSV file.
 
-![Figure 12. Download: enter a file name and click Download Data.](images/app_download_form.png){width=55%}
-
-![Figure 13. Download complete. The CSV file is saved through the browser.](images/app_download_done.png){width=55%}
 
 Closing the modal window releases the logger. Power-cycling the logger in idle mode keeps it idle; the recording stays on it until the next Initialize.
 
@@ -228,7 +228,7 @@ If the logger lost its settings (for example after re-flashing, §3.2), the read
 2. During download, click **Save Corrected File**; the file is saved under the name you entered. On the Data Analysis page, click **Rebuild Timestamps**, then **Download Corrected CSV**; that copy is named `<original name>_recovered.csv`.
 3. If the start time is not known yet, click **Save Without Correcting**; it can be rebuilt later on the Data Analysis page.
 
-# 8. Analysing data
+# 8. Analyzing data
 
 1. Click **Data Analysis** (home page or top bar), then drag the CSV file onto the box, or click **select a file**.
 2. The page shows (Figures 14–17):
@@ -250,7 +250,6 @@ All times are Eastern time, with daylight-saving changes handled. The screenshot
 
 > **Treat the detected wear times as estimates.** The detection thresholds were tuned on a small amount of data and have not been checked against a record of when the splint was really worn. Long continuous wear (e.g. overnight) may be split or cut short (Project Handover, §5.1). Look at the traces, not only the totals. Appendix C describes how to re-tune the detection.
 
-The page also opens older files: files without a proximity column (treated as covered throughout) and files downloaded before app v1.2.0 (timestamps converted from UTC to Eastern automatically).
 
 # 9. Data handling
 
@@ -274,15 +273,15 @@ Timestamp,Temperature,ProximityVal
 | `ProximityVal` | 0–255 from the APDS9960 sensor; low = covered (worn). Its baseline creeps upward over a long deployment; the analysis allows for this. |
 
 - Keep a deployment log: device label, participant ID, firmware/library versions, start time entered, actual power-on time, actual power-cycle (end) time, file name, and notes (device knocked, battery changed, splint removed for long periods, skin issues).
-- Keep the original download untouched; save any corrected copy (`_recovered.csv`) alongside it.
+- Keep the original download untouched; if modified (i.e., corrected), save any copy alongside it.
 - Use a study code, not a name, as the participant ID: it is stored on the logger, in the file and often in the file name.
-- **\[TODO\]**: where study data are stored and who can access them (participant data). No policy exists yet; see Project Handover §1.2 item 4.
+- The PI and research team will need to plan for data governance and where study data are stored and who can access them (participant data). No policy exists yet; see Project Handover §1.2 item 4.
 
 # 10. Troubleshooting
 
 | Symptom | Likely cause | Action |
 |----------|----------|-------------|
-| **No device found** | Logger is still collecting data (most common), or not connected | Power-cycle the logger once, check the green light is on, reconnect, click **Try Again** |
+| **No device found** | Logger is still collecting data (most common), or not connected | Power-cycle the logger once (press the reset button once, or unplug and replug the coin cell), check the green light is on, reconnect, click **Try Again** |
 | **No device found** and no lights at all | Coin cell not connected or flat: USB alone does not power the logger | Connect a coin cell (a new one if in doubt), then retry |
 | **No device found** with the green light on | Charge-only cable, loose cable, or another program (Arduino Serial Monitor) is using the port | Use a data cable, try another USB port, close the Serial Monitor |
 | "This device has not been initialized…" on download | The logger has no recording | Nothing to download; check you have the right logger |
@@ -302,7 +301,7 @@ Timestamp,Temperature,ProximityVal
 
 1. Download the recording (§7) and check it on the **Data Analysis** page (§8).
 2. Store the CSV with the deployment log (§9).
-3. Unscrew the case from the splint. The splint is custom-moulded for the participant and is not reused.
+3. Unscrew the case from the splint.
 4. Remove the coin cell and dispose of it safely, out of reach of children.
 5. Wipe the case, remove the old skin-friendly tape, and apply new tape before the next deployment.
 6. Note any problems (lights, error messages, short recordings) in the deployment log.
@@ -361,13 +360,12 @@ Firmware changes (`collect_temperature.ino`) are not part of the app release: ev
 
 # Appendix C. Tuning the wear-detection parameters (for analysts and developers)
 
-The rules that turn temperature and proximity into wear events were set by inspecting a small number of recordings (Project Handover, §5). Re-tune them once there are recordings with a known record of actual wear ("ground truth"). The parameters are constants in the code (`pages/analysis_helper.py`) with no setting in the app, so a change needs the Python version (Appendix A) and a new app release (Appendix B).
+The rules that use temperature and proximity values to estimate wear events were set by inspecting a small number of recordings (Project Handover, §5). Re-tune them once there are recordings with a known record of actual wear ("ground truth"). The parameters are constants in the code (`pages/analysis_helper.py`) with no setting in the app, so a change needs the Python version (Appendix A) and a new app release (Appendix B).
 
 ## C.1 Collect ground truth
 
-- **Wear diary:** the participant (or staff, in a supervised session) records on/off times. Cheap, but coarse and subject to recall bias.
+- **Wear diary:** the participant (or staff, in a supervised session) records on/off times.
 - **Supervised sessions:** scripted on/off periods in the lab, including long continuous wear and confounders (warm room, splint left on a warm surface, sensor covered but splint not worn).
-- **Reference sensor:** a second, independent sensor on the skin side (e.g. a commercial temperature button logger) for a few deployments.
 
 ## C.2 What to check
 
@@ -400,3 +398,17 @@ The rules that turn temperature and proximity into wear events were set by inspe
 4. When the results improve, add each labelled recording to `tests/` as a regression case, so later changes can't silently undo the improvement.
 5. Record the new values in `HANDOFF.md` §4.
 6. Release a new app version (Appendix B). Older downloads can simply be re-opened in the new version, since the raw readings are unchanged.
+
+# Appendix D. Checking clock drift (bench test)
+
+The logger keeps time with its own clock, with no correction. Its drift is expected to be negligible (about 1–2 minutes a month; Project Handover §4.4). This one-off bench test measures it. It is not part of a deployment: it needs a known stop time while the battery is still good.
+
+1. Fit a new CR2450 and initialize the logger (§5) with a start time a few minutes ahead.
+2. Connect the coin cell exactly at that start time, read from a reliable clock (e.g. a phone set to automatic network time).
+3. Leave the logger on the bench, not worn, for a fixed period of 2–4 weeks. Stop well before a month, so the battery is still good and the timer rollover (about 49.7 days) is far away.
+4. Note the exact real time, then power-cycle the logger to stop data collection.
+5. Download the recording (§7). Compare the real elapsed time (stop time − start time) with the recorded elapsed time (last timestamp − first timestamp).
+
+Without drift, the recorded elapsed time is up to one interval (5 minutes) shorter than the real elapsed time, because the stop falls between readings. Any difference beyond that is drift.
+
+For finer resolution, run the app from Python (Appendix A) with `WAKEUP_INTERVAL_SECONDS = 60` in `arduino.py` for the test: readings are then 1 minute apart, and storage lasts about 10 days, so keep the test under 10 days.

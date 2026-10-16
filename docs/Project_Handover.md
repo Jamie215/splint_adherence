@@ -49,7 +49,7 @@ All remaining work, in recommended order.
 | 3. Ethics approval | Not started | *Why:* required before any deployment with participants, including the ground-truth deployments in item 5. Prepare the submission covering the device (worn against the skin, battery-powered, research prototype), what is recorded, and how data is handled (item 4). | §7.1; SOP §1 |
 | 4. Data-governance plan | Not started; no policy exists | *Why:* the app leaves data handling to the user (§7.1). Decide where recordings and deployment logs are stored, who can access them, the participant ID scheme, how long data is kept, and how it is moved off the study computer; then update the SOP (§10). | §7.1; SOP §10 |
 | 5. Wear-detection accuracy | Not fully validated | *Why:* needed before wear times are reported as study results. Collect ground truth on a few deployments (wear diary or reference sensor), check overnight wear especially, and re-tune the thresholds accordingly. | §5; SOP Appendix C |
-| 6. Clock drift | Not measured; expected negligible | *Why:* confirms the timestamps stay accurate over a deployment, at no extra cost. At the end of each deployment, note the real time of the power-cycle and compare it with the last timestamp in the file. They should agree within one interval (5 minutes); a larger gap shows drift or a late power-on. | §4.4 |
+| 6. Clock drift | Not measured; expected negligible | *Why:* confirms the timestamps stay accurate over a deployment. Run the bench test in SOP Appendix D once; the difference should be under one interval (5 minutes). | §4.4; SOP Appendix D |
 
 ## 1.3 Documents
 
