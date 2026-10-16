@@ -16,7 +16,7 @@ This is the handover record for the project *Measuring Temperature and Muscle Co
 
 Companion documents are listed in §1.3, and terms are explained under *Key terms*, after §1.
 
-The muscle contraction variant of the project work will not be discussed as it was only explored at a preliminary level and has a different objective, where its focus is observing how much does the splint deactivate the target muscle.
+The muscle contraction variant of the project work will not be discussed as it was only explored at a preliminary level and has a different objective: observing how much the splint deactivates the target muscle.
 
 **Where to start**
 
@@ -29,13 +29,13 @@ The muscle contraction variant of the project work will not be discussed as it w
 
 # 1. State at transition (October 2026)
 
-**Summary.** The system works end to end: a logger can be set up with the app, worn in the splint for up to about a month, and downloaded, and the app turns the recording into daily wear time and an hour-by-hour picture of when the splint was worn. Two loggers have been built. They take a reading every 5 minutes, and the app estimates wear time from those readings. The detection has not yet been fully validated against a record of actual wear, and the app's average daily wear time currently leaves out days with no detected wear, so it overstates adherence (§5.5). Before a study with participants, ethics approval and a data-governance plan are needed, the known firmware issues should be fixed, battery life measured, and wear detection validated (§1.2).
+**Summary.** The system works end to end: a logger can be set up with the app, worn in the splint for up to about a month, and downloaded, and the app turns the recording into daily wear time and an hour-by-hour picture of when the splint was worn. Two loggers have been built. They take a reading every 5 minutes, and the app estimates wear time from those readings. The detection has not yet been fully validated against a record of actual wear. Before a study with participants, ethics approval and a data-governance plan are needed, the known firmware issues should be fixed, battery life measured, and wear detection validated (§1.2).
 
 ## 1.1 Current state
 
 - **Working logger.** Arduino Nano 33 BLE Sense (nRF52840) with its built-in HS300x temperature and APDS9960 proximity sensors. It records one reading every 5 minutes to its own flash memory, for up to about 52 days of storage, and is configured and read over USB.
 - **Desktop application (v1.3.0).** It initializes loggers, downloads recordings to CSV, recovers lost start times, and shows detected wear events, daily wear totals and an hour-of-day timeline. Built for Windows and macOS by GitHub Actions on each version tag, and published on the repository's Releases page.
-- **Preliminary test.** Recordings of up to about 36 days have been collected and analyzed to tune the wearing detection algorithm. There are two loggers built, where one of them needs reconnection at the rear 3.3 V trace to update the firmware while the other one is ready for deployment. The logger that requires updated firmware has a tag attached noting that its firmware needs updating.
+- **Preliminary test.** Recordings of up to about 36 days have been collected and analyzed to tune the wear-detection algorithm. Two loggers have been built: one is ready for deployment; the other needs its rear 3.3 V trace reconnected to update its firmware and has a tag attached saying so.
 - **Tested so far.** Resting current below about 750 µA on the bench. The proximity reading was found to drift upward over a 35-day recording, and the analysis now allows for it (§5.3). 22 automated tests (wear detection, time zones, timestamp recovery, serial protocol) run on every change to the app.
 
 ## 1.2 Next steps
@@ -46,11 +46,11 @@ All remaining work, in recommended order.
 |----------|----------|------------------------------|-----------|
 | 1. Firmware fixes (timing, storage, start time) | Predicted from code; not bench-tested | *Why:* recordings longer than about 7 weeks may be corrupted, and timestamps are only right if the logger is powered on at the entered start time. First confirm the storage issue: initialize a logger with a 1-second interval (temporary change to `WAKEUP_INTERVAL_SECONDS` in `arduino.py`, running the app from Python; SOP Appendix A) and leave it for 5 hours; the download should stop at exactly 15 000 rows. Then fix wrap-safe sleep and the storage limit (small, low risk), then start data collection at Initialize, in one firmware release. Bench-test for a full month, re-flash loggers after downloading their data, and update the SOP. | §4.4; `HANDOFF.md` §8 |
 | 2. Battery life | Not measured with the latest firmware; resting current below ~750 µA | *Why:* sets how long a deployment can safely run. A CR2450 (~620 mAh) at ~750 µA gives a rough upper bound of about 34 days, consistent with the ~36-day recording; until measured, fit a new cell for every deployment. Leave one logger on the bench for a full month, or until the battery dies, to measure battery life. | §3.2; §4.3 |
-| 3. Ethics approval | Not started | *Why:* required before any deployment with participants, including the ground-truth deployments in item 5. Prepare the study protocol, including participant wear instructions and how often to check the skin, and the submission covering the device (worn against the skin, battery-powered, research prototype), what is recorded, and how data is handled (item 4). | §7.1; SOP §1 |
-| 4. Data-governance plan | Not started; no policy exists | *Why:* the app leaves data handling to the user (§7.1). Decide where recordings and deployment logs are stored, who can access them, the participant ID scheme, how long data is kept, and how it is moved off the study computer; then update the SOP (§9). | §7.1; SOP §9 |
+| 3. Ethics approval | Not started | *Why:* required before any deployment with participants, including the ground-truth deployments in item 5. Prepare the study protocol, including participant wear instructions and how often to check the skin, and the submission covering the device (worn against the skin, battery-powered, research prototype), what is recorded, and how data is handled (item 4). | §7.1 |
+| 4. Data-governance plan | Not started; no policy exists | *Why:* the app leaves data handling to the user (§7.1). Decide where recordings and deployment logs are stored, who can access them, the participant ID scheme, how long data is kept, and how it is moved off the study computer. | §7.1 |
 | 5. Wear-detection accuracy | Not fully validated | *Why:* needed before wear times are reported as study results. Collect ground truth on a few deployments (e.g. a wear diary or supervised sessions), check overnight wear especially, and re-tune the thresholds accordingly. | §5; SOP Appendix C |
 | 6. Clock drift | Not measured; expected negligible | *Why:* confirms the timestamps stay accurate over a deployment. Run the bench test in SOP Appendix D once; the difference should be under one interval (5 minutes). | §4.4; SOP Appendix D |
-| 7. Daily average in the app | Known issue | *Why:* "Average Wear Time Per Day" leaves out days with no detected wear, so it overstates adherence; the partial first and last days count as full days. Average over every calendar day of the recording, and report the partial first and last days separately. Until then, divide Total Wear Time by the number of days in the recording (SOP §8). | §5.5; SOP §8 |
+| 7. Daily average definition | To confirm | *Why:* the app averages wear time only over days with detected wear (§5.5). Decide which definition the study uses. If every day of the recording should count, divide Total Wear Time by the number of days (SOP §8), or change the app to do so. | §5.5; SOP §8 |
 
 ## 1.3 Documents
 
@@ -152,7 +152,7 @@ The logger records on its own during the deployment. It only talks to a computer
 - **Limitations:**
   - *Start time.* Elapsed time counts from the power-on that starts data collection, while the start time is the one typed into the app at Initialize. Any gap between the two shifts every timestamp by that amount, and nothing in the file shows it. Fix: §1.2 item 1.
   - *Rollover.* `millis()` is 32-bit and wraps at about 49.7 days, and the sleep check `nextWakeTime > currentTime` is not wrap-safe: expect a burst of readings, then a long gap. The stored elapsed times stay correct. Fix: §1.2 item 1; until then, keep deployments to about a month.
-  - *Clock accuracy.* Timestamps rely on the board's oscillator, with no correction. With the board's crystal (tens of ppm) the error is about 1–2 minutes a month, well under one interval; while this is not measured directly, it is a commonly known limitation of using onboard crystal (check: §1.2 item 6).
+  - *Clock accuracy.* Timestamps rely on the board's oscillator, with no correction. With the board's crystal (tens of ppm) the error is about 1–2 minutes a month, well under one interval; this has not been measured directly, but it is typical of an onboard crystal (check: §1.2 item 6).
 
 ## 4.5 Robust proximity reads
 
@@ -183,11 +183,11 @@ Full parameter table: `HANDOFF.md` §4. How to re-tune: SOP Appendix C.
 
 ## 5.4 Thresholds are empirical
 
-All thresholds were set by inspecting a small number of recordings. A finer tuning may be required based on the larger sample data; SOP Appendix C describes how.
+All thresholds were set by inspecting a small number of recordings. Finer tuning may be needed once more data are available; SOP Appendix C describes how.
 
 ## 5.5 Daily summary
 
-- **Limitation:** The app's "Average Wear Time Per Day" is the mean over days with at least one detected wear event. Days with no detected wear are left out, so the average overstates adherence, and the partial first and last days of a recording are counted as full days. Until this is fixed (§1.2 item 7), divide Total Wear Time by the number of days in the recording (SOP §8).
+- **Note:** "Average Wear Time Per Day" is the mean over days with at least one detected wear event, so a day with no detected wear (e.g. the splint was not worn at all) is not counted, and the partial first and last days count as days. If this is not the definition the study needs, divide Total Wear Time by the number of days in the recording (SOP §8).
 
 # 6. Time handling
 

@@ -40,9 +40,8 @@ Keep in mind:
 - The app cannot see a logger that is collecting data. Power-cycle it first to reach state 4.
 - **Any reset or power loss** during a deployment, such as a loose coin cell, ends the recording for good.
 - Initializing **erases the previous recording**, so download it first (§7).
-- Timestamps count from the power-on that starts data collection, so power on at the start time entered in the app (§5).
 
-> **Safety and use limits.** This is a research prototype worn against the skin. It runs on a CR2450 coin cell: keep spare and used cells away from children, as a swallowed coin cell can cause serious internal injury. The skin-contact face of the case is covered with skin-friendly tape, renewed for every deployment. Check the skin under the case at each visit.
+> **Safety and use limits.** This is a research prototype worn against the skin. It runs on a CR2450 coin cell. The skin-contact face of the case is covered with skin-friendly tape, renewed for every deployment. Check the skin under the case at each visit.
 
 # 2. Building the device
 
@@ -87,7 +86,7 @@ To assemble the device, you need the following materials and equipment. The asse
 
    ![Figure 3. Fielect CR2450 horizontal coin cell holder, with its pins labelled.](images/sop/holder_pins.jpeg){width=50%}
 
-8. Insert a CR2450 to check that the Arduino is powered, and use the multimeter across the joints to check the voltage. **Remove the battery** once the test is complete.
+8. Insert a CR2450 to check that the Arduino is powered, and use the multimeter across the joints to check the connection. **Remove the battery** once the test is complete.
 9. Apply Kapton tape to the bottom of the board for protection.
 
    ![Figure 4. Kapton tape applied to the bottom of the Arduino.](images/sop/kapton.jpeg){width=35%}
@@ -194,10 +193,10 @@ Initializing tells the logger its participant ID and when its recording starts, 
 1. At the start time entered in §5, connect a **new** CR2450 coin cell. Note the actual time in the deployment log.
 2. The lights come on briefly, then go off when the first reading is taken; after that the logger stays dark. (A logger left with its green light on is idle, not collecting data: re-check §5.)
 3. Fit the device into its case and close the lid, as in Figure 6.
-4. Secure the case into the participant's splint with the Chicago screws, with fresh skin-friendly tape on the skin-contact face. The case's place in the splint is moulded by the PI (an orthopedist) when the participant's splint itself is moulded.
+4. Secure the case into the participant's splint with the Chicago screws, with fresh skin-friendly tape on the skin-contact face. (The PI, an orthopedist, moulds the case into the participant's splint when making the splint.)
 5. Give the participant their instructions, based on the study protocol (e.g. wearing schedule, keeping the splint away from moisture, and what to do if the device is knocked or comes loose).
 
-> **Note.** Plan deployments for **about one month at most**. The longest full recording tested lasted about 36 days. With the current firmware, the logger's internal timer rolls over at around 49.7 days, and its sampling can get affected. Also, the onboard storage becomes full about after 52 days (15000 readings at one every 5 minutes).
+> **Note.** Plan deployments for **about one month at most**. The longest full recording tested lasted about 36 days. With the current firmware, the logger's internal timer rolls over at around 49.7 days, and its sampling may be disrupted. Also, the onboard storage is full after about 52 days (15 000 readings at one every 5 minutes).
 
 # 7. Downloading data
 
@@ -250,7 +249,7 @@ All times are Eastern time, with daylight-saving changes handled. The screenshot
 
 > **Treat the detected wear times as estimates.** The detection thresholds were tuned on a small amount of data and have not been checked against a record of when the splint was really worn. Long continuous wear (e.g. overnight) may be split or cut short (Project Handover, §5.1). Look at the traces, not only the totals. Appendix C describes how to re-tune the detection.
 
-> **Average Wear Time Per Day overstates adherence.** It is averaged only over days with at least one detected wear event, so days without wear are left out, and the partial first and last days of a recording count as full days. To estimate adherence, divide **Total Wear Time** by the number of days in the recording instead.
+> **How Average Wear Time Per Day is calculated.** It is averaged over days with at least one detected wear event, so a day with no detected wear (e.g. the splint was not worn at all) is not counted, and the partial first and last days of a recording count as days. If you would rather count every day of the recording, divide **Total Wear Time** by the number of days in the recording.
 
 
 # 9. Data handling
