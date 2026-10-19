@@ -3,7 +3,7 @@ title: "Measuring Temperature and Muscle Contraction in Custom Orthotic Devices 
 subtitle: "State at transition, design decisions and their rationale, and directions to explore"
 ---
 
-*October 2026 Ver. Prepared by Jamie Kim.*
+*Version: October 2026. Prepared by Jamie Kim.*
 
 # About this document
 
@@ -44,7 +44,7 @@ All remaining work, in recommended order. Battery life comes first because its r
 
 | Item | Status | What to do | Details |
 |----------|----------|------------------------------|-----------|
-| 1. Battery life | Not measured with the latest firmware; resting current below ~750 µA | *Why:* sets how long a deployment can safely run, and how urgent item 2 is. Leave one logger on the bench for a full month, or until the battery dies. A CR2450 (~620 mAh) at ~750 µA gives a rough upper bound of about 34 days, consistent with the ~36-day recording. Until it is measured, fit a new cell for every deployment. | §3.2; §4.3 |
+| 1. Battery life | Not measured with the latest firmware; resting current below ~750 µA | *Why:* sets how long a deployment can safely run, and how urgent item 2 is. Leave one logger on the bench for a full month, or until the battery dies. A CR2450 (~620 mAh) at ~750 µA lasts roughly 34 days, in line with the ~36-day recording. Until it is measured, fit a new cell for every deployment. | §3.2; §4.3 |
 | 2. Firmware fixes (timing, storage) | Predicted from code; not bench-tested | *Why:* recordings longer than about 7 weeks may be corrupted. Add wrap-safe sleep and the storage limit; if item 1 confirms a battery life of 30–40 days, a recording never reaches 15 000 readings, so these two are safeguards rather than urgent work. To confirm the storage issue, initialize a logger with a 1-second interval (a temporary change to `WAKEUP_INTERVAL_SECONDS` in `arduino.py`, running the app from Python; SOP Appendix A) and leave it for 5 hours: the download should stop at exactly 15 000 rows. Release the fixes as one firmware update, bench-test it for a full month, re-flash the loggers after downloading their data, and update the SOP. | §4.4; `HANDOFF.md` §8 |
 | 3. Ethics approval | Not started | *Why:* required before any deployment with participants, including the ground-truth deployments in item 5. Prepare the study protocol, including participant wear instructions and how often to check the skin, and the submission covering the device (worn against the skin, battery-powered, research prototype), what is recorded, and how data is handled (item 4). | §7.1 |
 | 4. Data-governance plan | Not started; no policy exists | *Why:* the app leaves data handling to the user (§7.1). Decide where recordings and deployment logs are stored, who can access them, the participant ID scheme, how long data is kept, and how it is moved off the study computer. | §7.1 |
@@ -71,7 +71,7 @@ All remaining work, in recommended order. Battery life comes first because its r
 
 | Term | Meaning |
 |-----|-----------|
-| Logger / device | The Arduino Nano 33 BLE Sense board with programmed hardware, designed to be in the splint |
+| Logger / device | The Arduino Nano 33 BLE Sense board running the project firmware, designed to be in the splint |
 | App (GUI) | The desktop application used to set up loggers, download recordings and view the analysis |
 | Deployment | One period during which a participant wears the splint with a logger collecting data |
 | Wear event | A period the app judges the splint was worn, from its start (onset) to its end (offset) |
@@ -135,7 +135,7 @@ Loggers flashed before this change hold settings that the current firmware does 
 
 ## 4.3 Low power by switching peripherals off
 
-During data collection the firmware switches off USB, the serial ports, the radio and other unused parts of the chip, and waits between readings with `delay()`. The resting current measured below about 750 µA. A deeper sleep mode (RTC2 timer + `__WFI`) was tried, but the board never woke up from it to take the next reading; it may still be worth revisiting to extend battery life.
+During data collection the firmware switches off USB, the serial ports, the radio and other unused parts of the chip, and waits between readings with `delay()`. The measured resting current is below about 750 µA. A deeper sleep mode (RTC2 timer + `__WFI`) was tried, but the board never woke up from it to take the next reading; it may still be worth revisiting to extend battery life.
 
 ## 4.4 Fixed 5-minute interval, elapsed-time records
 

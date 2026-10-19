@@ -3,7 +3,7 @@ title: "Splint Adherence Logger: How to Build & Use"
 subtitle: "Standard operating procedure (SOP) for building, setting up and deploying the logger, and for downloading and analyzing its data"
 ---
 
-*Drafted in October 2026, prepared by Jamie Kim.*
+*Version: October 2026. Prepared by Jamie Kim.*
 
 # 1. Purpose and scope
 
@@ -62,7 +62,7 @@ To assemble the device, you need the following materials and equipment. The asse
 | | Kapton tape | Protects the bottom of the board |
 | 1 | Fielect CR/LIR2450 horizontal coin button battery holder | Holds the CR2450 that powers the Arduino. If another battery holder is used, the case may need a redesign |
 | | Multimeter | Used to check the soldered joints |
-| 1 | 3D-printed case | Printed from `splint_adherece_case.stl` in the repository. MSK-IF used PLA as the filament material |
+| 1 | 3D-printed case | Printed from `splint_adherece_case.stl` in the repository. PLA was used for the prototypes |
 | 1 | Clear acrylic window, 1 mm thick (1 cm × 1 cm) | Lets the APDS9960's infrared light pass through. Needs to be cut from a 1 mm sheet; sheets are available in Rm 1588, Elborn College |
 | | Acrylic (plexiglass) sheet cutter | Used to cut the window; available in Rm 1588, Elborn College |
 | | Super glue | Glues the window to the case |
@@ -93,7 +93,7 @@ To assemble the device, you need the following materials and equipment. The asse
 
 ## 2.2 Case
 
-1. 3D print the case from `splint_adherece_case.stl`, in a material of your choice. PLA was used during MSK-IF development.
+1. 3D print the case from `splint_adherece_case.stl`, in a material of your choice. PLA was used for the prototypes.
 2. Prepare a clear acrylic (plexiglass) window, 1 cm × 1 cm.
 3. From the inside, slide the window into the opening in the middle of the lid. It should slide easily between the printed rails. Make sure it fully covers the opening.
 
