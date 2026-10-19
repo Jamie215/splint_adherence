@@ -277,6 +277,12 @@ unstyled on offline machines. These files now ship under `assets/vendor/`:
    - In practice the clock rollover (item 1) ends reliable recording first.
 6. The frozen macOS build is unsigned. Gatekeeper will warn on first launch
    (right-click → Open).
+7. **A reset during logging ends the recording.** The mode toggles on every
+   power-up, so a reset or brown-out while logging leaves the device idle.
+
+**Proposed firmware changes** (see the Project Handover §1.2):
+- Wrap-safe sleep (item 1) and stopping at `MAX_DATA_ENTRIES` in
+  `saveTemperatureReading` (item 5, or erase every page that may be written).
 
 ## 9. Build, test and release runbook
 

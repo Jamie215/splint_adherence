@@ -1,0 +1,63 @@
+<!doctype html>
+<!--
+  Source for docs/images/data_row.png (Figure 2 in the handover).
+  Re-render the same way as device_lifecycle.html: screenshot #d at 2x
+  device scale, then resize to 1600 px wide.
+  Example values match the README's data-format example.
+-->
+<html><head><meta charset="utf-8">
+<style>
+  body { margin:0; background:#fff; font-family: Calibri, Carlito, "Segoe UI", Arial, sans-serif; }
+  svg text { font-family: inherit; }
+  .mono { font-family: Consolas, "DejaVu Sans Mono", monospace; }
+</style></head>
+<body>
+<svg id="d" width="1000" height="482" viewBox="0 0 1000 482" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1F4E79"/>
+    </marker>
+  </defs>
+
+  <!-- Stage 1: flash record -->
+  <text x="20" y="34" font-size="22" font-weight="700" fill="#0B0B0B">1. Stored in the logger's flash (12 bytes per reading)</text>
+  <g font-size="17" text-anchor="middle" fill="#0B0B0B">
+    <!-- 12 byte cells, 78 px each, starting x=20 -->
+    <rect x="20"  y="52" width="312" height="70" fill="#DCE6F1" stroke="#1F4E79" stroke-width="2"/>
+    <rect x="332" y="52" width="312" height="70" fill="#E2F0D9" stroke="#2E7D32" stroke-width="2"/>
+    <rect x="644" y="52" width="78"  height="70" fill="#FCE4D6" stroke="#B03A2E" stroke-width="2"/>
+    <rect x="722" y="52" width="234" height="70" fill="#F2F2F2" stroke="#A6A6A6" stroke-width="2" stroke-dasharray="6 4"/>
+    <text x="176" y="82" font-weight="700" class="mono">elapsedSeconds</text>
+    <text x="176" y="108">4 bytes · e.g. 300</text>
+    <text x="488" y="82" font-weight="700" class="mono">temperature</text>
+    <text x="488" y="108">4 bytes · e.g. 31.00 °C</text>
+    <text x="683" y="82" font-weight="700" class="mono">prox</text>
+    <text x="683" y="108">1 B · 5</text>
+    <text x="839" y="82" fill="#7F7F7F">padding</text>
+    <text x="839" y="108" fill="#7F7F7F">3 bytes, unused</text>
+  </g>
+  <text x="20" y="148" font-size="17" fill="#595959">Seconds since data collection started · °C from the HS300x · proximity 0–255 from the APDS9960 (low = covered)</text>
+
+  <!-- Arrow 1 -->
+  <line x1="120" y1="160" x2="120" y2="214" stroke="#1F4E79" stroke-width="2.5" marker-end="url(#a)"/>
+  <text x="140" y="194" font-size="18" fill="#1F4E79" font-weight="700">Download (<tspan class="mono">r</tspan>): the logger adds the stored start time (epoch) to elapsedSeconds</text>
+
+  <!-- Stage 2: serial line -->
+  <text x="20" y="248" font-size="22" font-weight="700" fill="#0B0B0B">2. Line sent over USB serial</text>
+  <rect x="20" y="260" width="560" height="50" rx="6" fill="#F7F7F7" stroke="#A6A6A6" stroke-width="1.5"/>
+  <text x="40" y="293" font-size="22" class="mono" fill="#0B0B0B">1767272700,31.00,5</text>
+  <text x="600" y="282" font-size="17" fill="#595959">UTC epoch seconds,</text>
+  <text x="600" y="303" font-size="17" fill="#595959">temperature, proximity</text>
+
+  <!-- Arrow 2 -->
+  <line x1="120" y1="318" x2="120" y2="372" stroke="#1F4E79" stroke-width="2.5" marker-end="url(#a)"/>
+  <text x="140" y="352" font-size="18" fill="#1F4E79" font-weight="700">App converts the epoch to Eastern time with its UTC offset</text>
+
+  <!-- Stage 3: CSV row -->
+  <text x="20" y="406" font-size="22" font-weight="700" fill="#0B0B0B">3. Row in the downloaded CSV</text>
+  <rect x="20" y="418" width="560" height="50" rx="6" fill="#DCE6F1" stroke="#1F4E79" stroke-width="1.5"/>
+  <text x="40" y="451" font-size="22" class="mono" fill="#0B0B0B">2026-01-01 08:05:00-05:00,31.00,5</text>
+  <text x="600" y="440" font-size="17" fill="#595959">Timestamp,Temperature,</text>
+  <text x="600" y="461" font-size="17" fill="#595959">ProximityVal</text>
+</svg>
+</body></html>
