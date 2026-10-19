@@ -13,7 +13,7 @@ per-day wear totals and an hour-of-day timeline.
 
 > **Taking over this project?** Start with the
 > [Project Handover](docs/Project_Handover.md) (state at transition, design
-> rationale, open issues, next steps). Operators should use the
+> rationale, next steps). Operators should use the
 > [SOP: How to Build & Use](docs/SOP_Build_and_Use.md). Word copies of both are
 > in `docs/` (regenerate with `bash docs/build_docs.sh`). See
 > [HANDOFF.md](HANDOFF.md) for architecture, firmware lessons learned, algorithm
@@ -32,9 +32,11 @@ per-day wear totals and an hour-of-day timeline.
 
 The device runs a small state machine. On each power-up it toggles between:
 
-- **Logging mode** – sensors are sampled every `wakeup_interval` seconds and the
-  reading (elapsed time, temperature, proximity) is written to flash. Most
-  peripherals are powered down between samples to keep sleep current low.
+- **Logging mode** – sensors are sampled every `wakeup_interval` seconds (5
+  minutes by default) and the reading (elapsed time, temperature, proximity) is
+  written to flash. Most peripherals are powered down between samples to keep
+  the resting current low. Plan deployments for about one month at most (see
+  the Project Handover §4.4).
 - **Idle mode** – the serial port is active and the device answers commands from
   the GUI.
 
@@ -67,17 +69,30 @@ The GUI talks to the device over a simple serial protocol:
 ## Requirements
 
 - Python 3.11+
-- An Arduino Nano 33 BLE Sense (nRF52840) with an HS300x temperature/humidity
-  sensor and an APDS9960 proximity sensor, flashed with the firmware in
-  `collect_temperature/`.
+- An Arduino Nano 33 BLE Sense Rev2 (nRF52840) with its built-in HS300x
+  temperature/humidity and APDS9960 proximity sensors, flashed with the
+  firmware in `collect_temperature/`.
+- A CR2450 coin cell wired to the 3.3 V pin, with the 3.3 V jumper on the back
+  of the board cut. USB alone then does not power the logger, so the cell must
+  be connected whenever the logger is used with the app. Build steps are in the
+  [SOP](docs/SOP_Build_and_Use.md) §2.
+
+Staff who only use the app do not need Python: download the Windows or macOS
+build from the [Releases](https://github.com/Jamie215/splint_adherence/releases)
+page (SOP §3.3).
 
 ## Getting started
 
 ### 1. Flash the firmware
 
 Open `collect_temperature/collect_temperature.ino` in the Arduino IDE, install
-the `Arduino_APDS9960` and `Arduino_HS300x` libraries, select the Nano 33 BLE
-board, and upload.
+the **Arduino Mbed OS Nano Boards** package and the `Arduino_APDS9960` and
+`Arduino_HS300x` libraries, select the Nano 33 BLE board, and upload.
+
+With the jumper cut, flashing first needs the 3.3 V jumper bridged and the coin
+cell removed (otherwise USB back-feeds the non-rechargeable cell); cut the
+jumper again afterwards. Re-flashing erases the stored settings, so download
+any recording first. See SOP §3.2.
 
 ### 2. Install Python dependencies
 
@@ -99,16 +114,21 @@ shuts itself down after a short timeout.
 
 ## Using the app
 
-1. **Initialize Device** – connect the device over USB, then set the start date,
+1. **Initialize Device** – with the coin cell connected, connect the device
+   over USB, then set the start date,
    time (**Eastern time**), and a participant ID (up to 15 letters, digits, `-` or `_`, e.g. `SA-014`). The GUI packs this configuration (with a checksum)
    and sends it to the device, which then powers down and begins logging on its
-   next power-up.
-2. **Data Download** – connect a device that has recorded data and enter a
-   filename. The recorded readings are streamed back and saved as a CSV, with
-   epoch timestamps converted to readable UTC.
+   next power-up. Elapsed time counts from that power-up, so the start time
+   should be the moment the coin cell will be connected (SOP §5).
+2. **Data Download** – power-cycle the logger once to end data collection (it
+   is not visible over USB while logging), connect it and enter a filename. The
+   recorded readings are streamed back and saved as a CSV, with timestamps in
+   Eastern time with their UTC offset.
 3. **Data Analysis** – upload a downloaded CSV to view the temperature and
    proximity traces, detected wearing periods, a per-day wear-time summary, and
-   an hour-of-day timeline of when the splint was worn.
+   an hour-of-day timeline of when the splint was worn. "Average wear time per
+   day" is averaged over days with at least one detected wear event (Project
+   Handover §5.5).
 
 ## Running the tests
 
@@ -134,8 +154,8 @@ python setup.py bdist_mac    # macOS   -> build/Splint_Adherence.app
 Bump `version` in `setup.py`, merge to `main`, then push a matching tag:
 
 ```bash
-git tag v1.3.0
-git push origin v1.3.0
+git tag v1.3.1
+git push origin v1.3.1
 ```
 
 The **Build and Release** GitHub Actions workflow builds both bundles and
@@ -150,7 +170,7 @@ Downloaded CSVs contain a short metadata header followed by the readings:
 ```
 Initial Timestamp,2026-01-01 08:00:00-05:00
 Wake-up Interval (Seconds),300
-Personal ID,42
+Personal ID,SA-014
 Timezone,America/New_York
 Timestamp,Temperature,ProximityVal
 2026-01-01 08:00:00-05:00,30.50,0
