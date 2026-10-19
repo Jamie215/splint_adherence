@@ -277,21 +277,12 @@ unstyled on offline machines. These files now ship under `assets/vendor/`:
    - In practice the clock rollover (item 1) ends reliable recording first.
 6. The frozen macOS build is unsigned. Gatekeeper will warn on first launch
    (right-click → Open).
-7. **Start time depends on power-on.** The device stores the start time
-   entered at Initialize but counts `elapsedSeconds` from the *next*
-   power-up, so any gap between the two shifts every timestamp.
-8. **A reset during logging ends the recording.** The mode toggles on every
+7. **A reset during logging ends the recording.** The mode toggles on every
    power-up, so a reset or brown-out while logging leaves the device idle.
 
-**Proposed firmware changes** (in this order; see the Project Handover §1.2):
-1. Wrap-safe sleep (item 1) and stopping at `MAX_DATA_ENTRIES` in
-   `saveTemperatureReading` (item 5, or erase every page that may be written).
-2. Start logging at Initialize (item 7), either:
-   - **from the computer's clock:** the app sends "now" and the device starts
-     logging immediately, with no power-down (the scheduled start goes away); or
-   - **counting from Initialize:** the device stays in low power after
-     Initialize and starts logging when the entered start time arrives (keeps
-     today's workflow, at a small battery cost).
+**Proposed firmware changes** (see the Project Handover §1.2):
+- Wrap-safe sleep (item 1) and stopping at `MAX_DATA_ENTRIES` in
+  `saveTemperatureReading` (item 5, or erase every page that may be written).
 
 ## 9. Build, test and release runbook
 

@@ -78,6 +78,14 @@ def _style_callouts(xml):
     return re.sub(r'<w:pStyle w:val="BlockText"\s*/>', lambda m: m.group(0) + ppr, xml)
 
 
+def _end_after_table(xml):
+    # Word needs a paragraph after a final table and adds a full-height one,
+    # which can spill onto a blank last page; add a 1-pt one instead.
+    tiny = ('<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="20" w:lineRule="exact"/>'
+            '<w:rPr><w:sz w:val="2"/></w:rPr></w:pPr></w:p>')
+    return re.sub(r'</w:tbl>((?:<w:bookmarkEnd[^>]*/>)*)(<w:sectPr)', r'</w:tbl>\1' + tiny + r'\2', xml)
+
+
 def style(path):
     with zipfile.ZipFile(path) as z:
         items = [(info, z.read(info.filename)) for info in z.infolist()]
@@ -87,6 +95,7 @@ def style(path):
             xml = data.decode("utf-8")
             xml = re.sub(r"<w:tbl>.*?</w:tbl>", lambda m: _style_table(m.group(0)), xml, flags=re.S)
             xml = _style_callouts(xml)
+            xml = _end_after_table(xml)
             data = xml.encode("utf-8")
         out.append((info, data))
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".docx")
