@@ -39,12 +39,17 @@ import numpy as np
 import pandas as pd
 
 ALPHA_PER_5MIN = 0.2
+T_EQ_CAP = 34.0
 
 # State 0 is "worn" and stays fixed. The others are initial guesses refined by EM.
 # Columns: [T_eq (C), log1p(proximity)]
-STATE_NAMES = ["worn", "covered/stored", "uncovered", "proximity drift", "warm ambient"]
-INIT_MEANS = np.array([[32.0, 0.5], [19.0, 0.0], [19.0, 4.8], [19.0, 2.5], [25.0, 2.5]])
-INIT_VARS = np.array([[3.0**2, 1.2**2], [4, 0.3], [4, 0.2], [4, 0.6], [4, 1.5]])
+# The last state, "other", is a broad background state that is also kept fixed. Without
+# it, any sample far from every learned state (e.g. the splint left somewhere cold,
+# T_eq ~13 C) is assigned to whichever state is least unlikely, which can be "worn".
+STATE_NAMES = ["worn", "covered/stored", "uncovered", "proximity drift", "warm ambient", "other (not worn)"]
+INIT_MEANS = np.array([[32.0, 0.5], [19.0, 0.0], [19.0, 4.8], [19.0, 2.5], [25.0, 2.5], [18.0, 2.5]])
+INIT_VARS = np.array([[3.0**2, 1.2**2], [4, 0.3], [4, 0.2], [4, 0.6], [4, 1.5], [7.0**2, 2.5**2]])
+FIXED_STATES = [0, len(INIT_MEANS) - 1]
 
 
 def implied_target(time_series, temp_series, alpha=ALPHA_PER_5MIN):
@@ -54,10 +59,22 @@ def implied_target(time_series, temp_series, alpha=ALPHA_PER_5MIN):
     # Scale alpha to the actual step length (first-order response).
     a = 1 - (1 - alpha) ** (step_min / 5.0)
     d_temp = (temp.shift(-1) - temp).ffill()
-    return (temp + d_temp / a).rolling(3, center=True, min_periods=1).median().to_numpy()
+    t_eq = (temp + d_temp / a).rolling(3, center=True, min_periods=1).median()
+    # Fast warm-ups overshoot (T_eq of 40-60 C from 5-min sampling noise and
+    # contact transients). Being heated harder than skin is still evidence of
+    # wear, so cap at the top of the skin range instead of letting the worn
+    # Gaussian treat it as an outlier.
+    return t_eq.clip(upper=T_EQ_CAP).to_numpy()
 
 
-def detect_hmm(time_series, temp_series, prox_series, alpha=ALPHA_PER_5MIN, max_iter=100, tol=1e-3):
+def detect_hmm(time_series, temp_series, prox_series, alpha=ALPHA_PER_5MIN, max_iter=100, tol=1e-3,
+               skip_start_min=30):
+    """Return (P(worn) per sample, T_eq, fitted model).
+
+    T_eq[t] uses the step t -> t+1, so P(worn)[t] describes the interval that
+    starts at sample t. The first `skip_start_min` minutes (device setup and
+    handling) are forced to P(worn) = 0.
+    """
     from hmmlearn.hmm import GaussianHMM
 
     t_eq = implied_target(time_series, temp_series, alpha)
@@ -79,10 +96,10 @@ def detect_hmm(time_series, temp_series, prox_series, alpha=ALPHA_PER_5MIN, max_
         for _ in range(max_iter):
             model.fit(X)  # one EM step
             means = model.means_.copy()
-            means[0] = INIT_MEANS[0]  # pin the worn state to physiology
+            means[FIXED_STATES] = INIT_MEANS[FIXED_STATES]  # pin worn (physiology) and background
             model.means_ = means
             covs = np.array([np.diag(c) for c in model.covars_])
-            covs[0] = INIT_VARS[0]
+            covs[FIXED_STATES] = INIT_VARS[FIXED_STATES]
             model.covars_ = covs
             ll = model.score(X)
             if abs(ll - prev) < tol:
@@ -90,6 +107,8 @@ def detect_hmm(time_series, temp_series, prox_series, alpha=ALPHA_PER_5MIN, max_
             prev = ll
 
     p_worn = model.predict_proba(X)[:, 0]
+    t = pd.to_datetime(pd.Series(time_series)).reset_index(drop=True)
+    p_worn[(t - t.iloc[0]).dt.total_seconds().to_numpy() < skip_start_min * 60] = 0.0
     return p_worn, t_eq, model
 
 
@@ -103,7 +122,10 @@ def to_events(time_series, p_worn, threshold=0.5, min_samples=2):
             while j + 1 < n and mask[j + 1]:
                 j += 1
             if j - i + 1 >= min_samples:
-                rows.append((i, j, t[i], t[j], (t[j] - t[i]).total_seconds() / 60 + 5,
+                # Sample j's posterior covers the interval j -> j+1, so removal
+                # happened by the next sample.
+                end = t[j + 1] if j + 1 < n else t[j]
+                rows.append((i, j, t[i], end, (end - t[i]).total_seconds() / 60,
                              float(np.mean(p_worn[i:j + 1]))))
             i = j + 1
         else:
