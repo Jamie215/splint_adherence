@@ -14,8 +14,7 @@ per-day wear totals and an hour-of-day timeline.
 > **Taking over this project?** Start with the
 > [Project Handover](docs/Project_Handover.md) (state at transition, design
 > rationale, next steps). Operators should use the
-> [SOP: How to Build & Use](docs/SOP_Build_and_Use.md). Word copies of both are
-> in `docs/` (regenerate with `bash docs/build_docs.sh`). See
+> [SOP: How to Build & Use](docs/SOP_Build_and_Use.md). See
 > [HANDOFF.md](HANDOFF.md) for architecture, firmware lessons learned, algorithm
 > parameters, known limitations, and the release runbook.
 
