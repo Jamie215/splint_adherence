@@ -23,7 +23,7 @@ The muscle contraction variant of the project work will not be discussed as it w
 | If you want to… | Start with |
 |--------|--------|
 | Know whether the system is ready and what is left to do | §1 |
-| Build a logger, run a deployment, or download and analyze data | The SOP (`docs/SOP_Build_and_Use.docx`) |
+| Build a logger, run a deployment, or download and analyze data | The SOP (`docs/SOP_Build_and_Use.md`) |
 | Change the app or the firmware | `README.md`, then `HANDOFF.md` (developer reference), then §3–§7 of this document |
 | Understand why it works the way it does | §2–§7 |
 
@@ -56,8 +56,8 @@ All remaining work, in recommended order. Battery life comes first because its r
 
 | Document | Use it for |
 |----------|----------|
-| `docs/SOP_Build_and_Use.md` (+ `.docx`) | Building the logger, deployments, download, analysis, troubleshooting, tuning the detection |
-| `docs/Project_Handover.md` (+ `.docx`) | This document: state, design rationale, future directions |
+| `docs/SOP_Build_and_Use.md` | Building the logger, deployments, download, analysis, troubleshooting, tuning the detection |
+| `docs/Project_Handover.md` | This document: state, design rationale, future directions |
 | `HANDOFF.md` | Developer reference: code layout, flash layout, algorithm parameters, known firmware issues and fixes, release runbook |
 | `README.md` | Overview, quick start, serial protocol, data format |
 
